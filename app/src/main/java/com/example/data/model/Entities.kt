@@ -41,11 +41,11 @@ data class Staff(
 
 @Entity(tableName = "attendance")
 data class AttendanceRecord(
-    @PrimaryKey val id: String = "${date}_${studentId}",
     val date: String, // YYYY-MM-DD
     val studentId: String,
     val batchId: String? = null,
-    val status: String = "present" // "present" or "absent"
+    val status: String = "present", // "present" or "absent"
+    @PrimaryKey val id: String = "${date}_${studentId}"
 )
 
 @Entity(tableName = "payments")
@@ -80,10 +80,10 @@ data class Exam(
 
 @Entity(tableName = "exam_results")
 data class ExamResult(
-    @PrimaryKey val id: String = "${examId}_${studentId}",
     val examId: String,
     val studentId: String,
-    val marksObtained: Double
+    val marksObtained: Double,
+    @PrimaryKey val id: String = "${examId}_${studentId}"
 )
 
 @Entity(tableName = "communication_logs")
