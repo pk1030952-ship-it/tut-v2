@@ -1,0 +1,6 @@
+{
+  "name": "CoachMaster",
+  "description": "Institute management, attendance, fee ledger, batches, and PDF receipts for coaching centers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
