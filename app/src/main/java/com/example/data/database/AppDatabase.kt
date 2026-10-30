@@ -24,7 +24,7 @@ import kotlinx.coroutines.launch
         CommunicationLog::class,
         InstituteConfig::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -64,13 +64,14 @@ abstract class AppDatabase : RoomDatabase() {
                                         adminPassword = "P@88337",
                                         darkMode = false,
                                         isBiometricEnabled = true,
-                                        currencySymbol = "₹"
+                                        currencySymbol = "₹",
+                                        defaultClassesPerCycle = 30
                                     )
                                 )
                             }
                         }
                     })
-                    .fallbackToDestructiveMigration()
+                    .fallbackToDestructiveMigration(true)
                     .build()
                 INSTANCE = instance
                 instance

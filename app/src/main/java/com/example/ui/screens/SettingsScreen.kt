@@ -34,6 +34,9 @@ fun SettingsScreen(
     var instName by remember(config.instituteName) { mutableStateOf(config.instituteName) }
     var instAddress by remember(config.address) { mutableStateOf(config.address) }
     var instPhone by remember(config.contactPhone) { mutableStateOf(config.contactPhone) }
+    var defaultClassesStr by remember(config.defaultClassesPerCycle) {
+        mutableStateOf(config.defaultClassesPerCycle.toString())
+    }
 
     var adminPin by remember(config.adminPin) { mutableStateOf(config.adminPin) }
     var adminPassword by remember(config.adminPassword) { mutableStateOf(config.adminPassword) }
@@ -68,13 +71,13 @@ fun SettingsScreen(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Manage institute profile, cloud data, and application settings.",
+                text = "Manage institute profile, fee cycle rules, cloud data, and application settings.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
         }
 
-        // 1. Institute Profile Card
+        // 1. Institute Profile & Fee Cycle Rules Card
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -87,7 +90,7 @@ fun SettingsScreen(
                         Icon(Icons.Default.Apartment, contentDescription = null, tint = IndigoPrimary)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Institute Profile",
+                            text = "Institute Profile & Fee Cycle Rules",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -122,15 +125,41 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth().testTag("setting_inst_phone")
                     )
 
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = defaultClassesStr,
+                        onValueChange = { defaultClassesStr = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("Default Classes per Fee Cycle (e.g. 30 or 26)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("setting_default_classes_cycle")
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = defaultClassesStr == "30",
+                            onClick = { defaultClassesStr = "30" },
+                            label = { Text("30 Classes (Default)") }
+                        )
+                        FilterChip(
+                            selected = defaultClassesStr == "26",
+                            onClick = { defaultClassesStr = "26" },
+                            label = { Text("26 Classes (Excl. Sundays)") }
+                        )
+                    }
+
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Button(
                         onClick = {
+                            val parsedCycle = defaultClassesStr.toIntOrNull()?.takeIf { it > 0 } ?: 30
                             viewModel.updateConfig(
                                 config.copy(
                                     instituteName = instName.trim(),
                                     address = instAddress.trim(),
-                                    contactPhone = instPhone.trim()
+                                    contactPhone = instPhone.trim(),
+                                    defaultClassesPerCycle = parsedCycle
                                 )
                             )
                         },
@@ -138,7 +167,7 @@ fun SettingsScreen(
                         shape = RoundedCornerShape(10.dp),
                         modifier = Modifier.fillMaxWidth().testTag("save_branding_btn")
                     ) {
-                        Text("Save Profile")
+                        Text("Save Profile & Billing Rules")
                     }
                 }
             }

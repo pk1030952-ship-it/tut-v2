@@ -26,7 +26,8 @@ data class Batch(
     val schedule: String = "",
     val timing: String = "",
     val teacherId: String? = null, // Maps to "teacherId" in Firebase v10studendrecord.html
-    val teacherName: String = ""
+    val teacherName: String = "",
+    val classesPerCycle: Int = 0 // 0 = inherit global InstituteConfig.defaultClassesPerCycle (e.g., 30 or 26)
 )
 
 @Entity(tableName = "staff")
@@ -44,7 +45,8 @@ data class AttendanceRecord(
     val date: String, // YYYY-MM-DD
     val studentId: String,
     val batchId: String? = null,
-    val status: String = "present", // "present" or "absent"
+    val status: String = "present", // "present", "absent", "holiday", or "leave"
+    val reason: String = "", // Reason for holiday or approved medical leave
     @PrimaryKey val id: String = "${date}_${studentId}"
 )
 
@@ -106,5 +108,6 @@ data class InstituteConfig(
     val adminPassword: String = "P@88337",
     val darkMode: Boolean = false,
     val isBiometricEnabled: Boolean = true,
-    val currencySymbol: String = "₹"
+    val currencySymbol: String = "₹",
+    val defaultClassesPerCycle: Int = 30
 )

@@ -342,6 +342,56 @@ class CoachMasterRepository(
         )
         expenseDao.insertExpense(expense)
 
+        // Seed 35 days of demo attendance for Rahul (32 working days + 3 holidays -> 1 completed cycle + 2/30 progress)
+        // and 24 working days + 2 holidays for Priya (24/30 progress -> 6 classes left)
+        val demoAttendance = mutableListOf<AttendanceRecord>()
+        val cal = java.util.Calendar.getInstance()
+        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        for (i in 35 downTo 1) {
+            val dCal = cal.clone() as java.util.Calendar
+            dCal.add(java.util.Calendar.DAY_OF_YEAR, -i)
+            val dateStr = fmt.format(dCal.time)
+            val isHoliday = (i == 10 || i == 20 || i == 30)
+            val statusRahul = when {
+                isHoliday -> "holiday"
+                i % 9 == 0 -> "absent"
+                else -> "present"
+            }
+            val reasonStr = if (isHoliday) "Festival Holiday" else ""
+            demoAttendance.add(
+                AttendanceRecord(
+                    date = dateStr,
+                    studentId = stuId1,
+                    batchId = batchId,
+                    status = statusRahul,
+                    reason = reasonStr
+                )
+            )
+            if (i <= 26) {
+                val statusPriya = when {
+                    isHoliday -> "holiday"
+                    i == 5 -> "leave"
+                    i % 7 == 0 -> "absent"
+                    else -> "present"
+                }
+                val reasonPriya = when {
+                    isHoliday -> "Festival Holiday"
+                    i == 5 -> "Medical Leave"
+                    else -> ""
+                }
+                demoAttendance.add(
+                    AttendanceRecord(
+                        date = dateStr,
+                        studentId = stuId2,
+                        batchId = batchId,
+                        status = statusPriya,
+                        reason = reasonPriya
+                    )
+                )
+            }
+        }
+        attendanceDao.insertAttendanceList(demoAttendance)
+
         pushToCloud()
     }
 
@@ -434,13 +484,14 @@ class CoachMasterRepository(
             )
         }
 
-        // Attendance in v10studendrecord.html is { "YYYY-MM-DD": [ { studentId, status } ] }
+        // Attendance in v10studendrecord.html is { "YYYY-MM-DD": [ { studentId, status, reason } ] }
         val attendanceByDate = mutableMapOf<String, List<Map<String, String>>>()
         attendanceList.groupBy { it.date }.forEach { (dateStr, records) ->
             attendanceByDate[dateStr] = records.map { r ->
                 mapOf(
                     "studentId" to r.studentId,
-                    "status" to r.status
+                    "status" to r.status,
+                    "reason" to r.reason
                 )
             }
         }
@@ -464,7 +515,8 @@ class CoachMasterRepository(
                 "subject" to b.subject,
                 "schedule" to b.schedule,
                 "timing" to b.timing,
-                "teacherId" to b.teacherId
+                "teacherId" to b.teacherId,
+                "classesPerCycle" to b.classesPerCycle
             )
         }
 
@@ -521,7 +573,8 @@ class CoachMasterRepository(
             "darkMode" to currentConfig.darkMode,
             "instituteName" to currentConfig.instituteName,
             "address" to currentConfig.address,
-            "contactPhone" to currentConfig.contactPhone
+            "contactPhone" to currentConfig.contactPhone,
+            "defaultClassesPerCycle" to currentConfig.defaultClassesPerCycle
         )
 
         return mapOf(
@@ -565,6 +618,7 @@ class CoachMasterRepository(
                 val name = m["name"]?.toString() ?: return@mapNotNull null
                 val teacherId = m["teacherId"]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
                 val teacherName = teacherId?.let { staffById[it]?.name } ?: (m["teacherName"]?.toString() ?: "")
+                val classesPerCycle = (m["classesPerCycle"] as? Number)?.toInt() ?: m["classesPerCycle"]?.toString()?.toIntOrNull() ?: 0
                 Batch(
                     id = id,
                     name = name,
@@ -572,7 +626,8 @@ class CoachMasterRepository(
                     schedule = m["schedule"]?.toString() ?: "",
                     timing = m["timing"]?.toString() ?: "",
                     teacherId = teacherId,
-                    teacherName = teacherName
+                    teacherName = teacherName,
+                    classesPerCycle = classesPerCycle
                 )
             }
 
@@ -598,7 +653,7 @@ class CoachMasterRepository(
             }
             val studentBatchMap = parsedStudents.associate { it.id to it.batchId }
 
-            // Parse Attendance (Map of date -> List of {studentId, status})
+            // Parse Attendance (Map of date -> List of {studentId, status, reason})
             val parsedAttendance = mutableListOf<AttendanceRecord>()
             val rawAtt = data["attendance"]
             if (rawAtt is Map<*, *>) {
@@ -608,13 +663,15 @@ class CoachMasterRepository(
                     items.forEach { item ->
                         val stuId = item["studentId"]?.toString() ?: return@forEach
                         val status = item["status"]?.toString() ?: "present"
+                        val reason = item["reason"]?.toString() ?: ""
                         parsedAttendance.add(
                             AttendanceRecord(
                                 id = "${dateStr}_${stuId}",
                                 date = dateStr,
                                 studentId = stuId,
                                 batchId = studentBatchMap[stuId],
-                                status = status
+                                status = status,
+                                reason = reason
                             )
                         )
                     }
@@ -715,11 +772,15 @@ class CoachMasterRepository(
             val rawSettings = data["settings"] as? Map<String, Any?>
             val existingConfig = configDao.getConfigSync() ?: InstituteConfig()
             val updatedConfig = if (rawSettings != null) {
+                val parsedCycle = (rawSettings["defaultClassesPerCycle"] as? Number)?.toInt()
+                    ?: rawSettings["defaultClassesPerCycle"]?.toString()?.toIntOrNull()
+                    ?: existingConfig.defaultClassesPerCycle
                 existingConfig.copy(
                     instituteName = rawSettings["instituteName"]?.toString()?.ifBlank { "CoachMaster" } ?: existingConfig.instituteName,
                     address = rawSettings["address"]?.toString() ?: existingConfig.address,
                     contactPhone = rawSettings["contactPhone"]?.toString() ?: existingConfig.contactPhone,
-                    darkMode = (rawSettings["darkMode"] as? Boolean) ?: existingConfig.darkMode
+                    darkMode = (rawSettings["darkMode"] as? Boolean) ?: existingConfig.darkMode,
+                    defaultClassesPerCycle = if (parsedCycle > 0) parsedCycle else 30
                 )
             } else existingConfig
 

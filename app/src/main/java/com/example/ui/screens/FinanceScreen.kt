@@ -32,6 +32,8 @@ fun FinanceScreen(
     val students by viewModel.students.collectAsState()
     val batches by viewModel.batches.collectAsState()
     val allPayments by viewModel.payments.collectAsState()
+    val allAttendance by viewModel.attendance.collectAsState()
+    val config by viewModel.config.collectAsState()
 
     var selectedStudent by remember(students) {
         mutableStateOf(uiState.selectedStudentForPayment ?: students.firstOrNull())
@@ -59,9 +61,16 @@ fun FinanceScreen(
         } else emptyList()
     }
 
-    val dueInfo = remember(selectedStudent, studentPayments) {
+    val dueInfo = remember(selectedStudent, studentPayments, allAttendance, batches, config) {
         if (selectedStudent != null) {
-            FeeCalculator.calculateStudentDues(selectedStudent!!, studentPayments)
+            val batch = batches.find { it.id == selectedStudent!!.batchId }
+            val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, config)
+            FeeCalculator.calculateStudentDues(
+                student = selectedStudent!!,
+                payments = studentPayments,
+                attendanceRecords = allAttendance,
+                classesPerCycle = cycleLen
+            )
         } else null
     }
 
@@ -112,7 +121,7 @@ fun FinanceScreen(
                             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = isStudentDropdownExpanded) },
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .menuAnchor()
+                                .menuAnchor(MenuAnchorType.PrimaryNotEditable, enabled = true)
                                 .testTag("finance_student_dropdown"),
                             shape = RoundedCornerShape(10.dp)
                         )
@@ -138,7 +147,7 @@ fun FinanceScreen(
         }
 
         if (selectedStudent != null && dueInfo != null) {
-            // 3 Financial Status Cards matching v10studendrecord.html
+            // 3 Financial Status Cards + Working Days Proof
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
@@ -155,7 +164,7 @@ fun FinanceScreen(
                                 Text("Total Accrued Fees", fontSize = 11.sp, color = Color.White.copy(alpha = 0.7f))
                                 Text(FeeCalculator.formatCurrency(dueInfo.totalAccrued), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
                                 Text(
-                                    text = "Cycle: ${dueInfo.cyclesElapsed} | Next: ${dueInfo.nextDueDateStr}",
+                                    text = "Cycles: ${dueInfo.cyclesElapsed} (${dueInfo.currentCycleProgress}/${dueInfo.classesPerCycle}d)",
                                     fontSize = 10.sp,
                                     color = IndigoLight
                                 )
@@ -173,6 +182,29 @@ fun FinanceScreen(
                                 Text(FeeCalculator.formatCurrency(dueInfo.totalPaid), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = EmeraldSuccess)
                                 Text("${studentPayments.size} transactions", fontSize = 10.sp, color = Color.Gray)
                             }
+                        }
+                    }
+
+                    // Working Days & Holiday Proof Summary Strip
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = IndigoLight.copy(alpha = 0.65f))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                            Text(
+                                text = "Open Days: ${dueInfo.daysElapsed} (Present: ${dueInfo.presentDays}, Absent: ${dueInfo.absentDays})  •  Holidays (Free): ${dueInfo.holidayDays}" +
+                                    if (dueInfo.leaveDays > 0) "  •  Leave: ${dueInfo.leaveDays}" else "",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = IndigoDark
+                            )
+                            Text(
+                                text = "Current Cycle Progress: ${dueInfo.currentCycleProgress} / ${dueInfo.classesPerCycle} Classes Completed (${dueInfo.nextDueDateStr})",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = if (dueInfo.pendingBalance > 0) CoralWarning else EmeraldDark
+                            )
                         }
                     }
 

@@ -31,6 +31,7 @@ fun ReportsScreen(
     val payments by viewModel.payments.collectAsState()
     val expenses by viewModel.expenses.collectAsState()
     val attendance by viewModel.attendance.collectAsState()
+    val config by viewModel.config.collectAsState()
 
     val financeChartData = remember(payments, expenses) {
         viewModel.getMonthlyFinanceData()
@@ -40,9 +41,11 @@ fun ReportsScreen(
         viewModel.getMonthlyAttendanceTrend()
     }
 
-    val overdueStudents = remember(activeStudents, payments) {
+    val overdueStudents = remember(activeStudents, payments, attendance, batches, config) {
         activeStudents.map { student ->
-            val due = FeeCalculator.calculateStudentDues(student, payments)
+            val batch = batches.find { it.id == student.batchId }
+            val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, config)
+            val due = FeeCalculator.calculateStudentDues(student, payments, attendance, cycleLen)
             Pair(student, due)
         }.filter { it.second.pendingBalance > 0 }
             .sortedByDescending { it.second.pendingBalance }

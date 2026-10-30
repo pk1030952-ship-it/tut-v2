@@ -32,6 +32,7 @@ import com.example.data.model.Student
 import com.example.ui.CoachMasterViewModel
 import com.example.ui.theme.*
 import com.example.util.FeeCalculator
+import com.example.util.StudentDueInfo
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,6 +47,7 @@ fun StudentsScreen(
     val payments by viewModel.payments.collectAsState()
     val attendance by viewModel.attendance.collectAsState()
     val communications by viewModel.communications.collectAsState()
+    val config by viewModel.config.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedBatchId by remember { mutableStateOf<String?>(null) }
@@ -98,7 +100,7 @@ fun StudentsScreen(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Tap a student's name to view their full profile & history.",
+                text = "Tap a student's name to view their full profile, 30-day cycle & history.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
@@ -183,12 +185,18 @@ fun StudentsScreen(
                 ) {
                     items(filteredStudents, key = { it.id }) { student ->
                         val batch = batches.find { it.id == student.batchId }
-                        val dueInfo = FeeCalculator.calculateStudentDues(student, payments)
+                        val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, config)
+                        val dueInfo = FeeCalculator.calculateStudentDues(
+                            student = student,
+                            payments = payments,
+                            attendanceRecords = attendance,
+                            classesPerCycle = cycleLen
+                        )
 
                         StudentCardItem(
                             student = student,
                             batchName = batch?.name ?: "None",
-                            pendingDues = dueInfo.pendingBalance,
+                            dueInfo = dueInfo,
                             isAdmin = uiState.isAdmin,
                             onCardClick = { viewModel.openStudentDossier(student) },
                             onEditClick = {
@@ -245,12 +253,16 @@ fun StudentsScreen(
         )
     }
 
-    // 1. Finance History & Profile Modal (Matches finance-history-modal in v10studendrecord.html)
+    // 1. Finance History & Profile Modal (with Working Days & Holiday Proof)
     if (uiState.selectedStudentForDossier != null) {
         val s = uiState.selectedStudentForDossier!!
+        val batch = batches.find { it.id == s.batchId }
+        val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, config)
         FinanceHistoryModal(
             student = s,
             payments = payments.filter { it.studentId == s.id },
+            attendanceRecords = attendance.filter { it.studentId == s.id },
+            classesPerCycle = cycleLen,
             isAdmin = uiState.isAdmin,
             onDismiss = { viewModel.closeStudentDossier() },
             onReceivePayment = {
@@ -260,7 +272,7 @@ fun StudentsScreen(
         )
     }
 
-    // 2. Attendance History Modal (Matches attendance-history-modal in v10studendrecord.html)
+    // 2. Attendance History Modal
     if (uiState.selectedStudentForAttendanceHistory != null) {
         val s = uiState.selectedStudentForAttendanceHistory!!
         AttendanceHistoryModal(
@@ -270,7 +282,7 @@ fun StudentsScreen(
         )
     }
 
-    // 3. Communication Log Modal (Matches comm-log-modal in v10studendrecord.html)
+    // 3. Communication Log Modal
     if (uiState.selectedStudentForCommLog != null) {
         val s = uiState.selectedStudentForCommLog!!
         CommunicationLogModal(
@@ -283,7 +295,7 @@ fun StudentsScreen(
         )
     }
 
-    // 4. Share & Print Options Modal (Matches share-options-modal in v10studendrecord.html)
+    // 4. Share & Print Options Modal
     if (uiState.selectedStudentForShareOptions != null) {
         val s = uiState.selectedStudentForShareOptions!!
         ShareOptionsModal(
@@ -309,7 +321,7 @@ fun StudentsScreen(
 fun StudentCardItem(
     student: Student,
     batchName: String,
-    pendingDues: Double,
+    dueInfo: StudentDueInfo,
     isAdmin: Boolean,
     onCardClick: () -> Unit,
     onEditClick: () -> Unit,
@@ -319,6 +331,13 @@ fun StudentCardItem(
     onToggleStatus: () -> Unit,
     onDeleteClick: () -> Unit
 ) {
+    val pendingDues = dueInfo.pendingBalance
+    val progressFraction = remember(dueInfo.currentCycleProgress, dueInfo.classesPerCycle) {
+        if (dueInfo.classesPerCycle > 0) {
+            (dueInfo.currentCycleProgress.toFloat() / dueInfo.classesPerCycle.toFloat()).coerceIn(0f, 1f)
+        } else 0f
+    }
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -391,7 +410,7 @@ fun StudentCardItem(
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
                     Text(
-                        text = "Batch: $batchName  •  Monthly Fee: ${FeeCalculator.formatCurrency(student.monthlyFee)}",
+                        text = "Batch: $batchName  •  Cycle Fee: ${FeeCalculator.formatCurrency(student.monthlyFee)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
@@ -410,6 +429,46 @@ fun StudentCardItem(
                         Text("Cleared", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = EmeraldSuccess)
                     }
                 }
+            }
+
+            // Student Card 30-Day Working Classes Progress Bar & Counter
+            Spacer(modifier = Modifier.height(10.dp))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 10.dp, vertical = 8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "${dueInfo.currentCycleProgress} / ${dueInfo.classesPerCycle} Classes Completed (${dueInfo.classesLeftInCycle} classes left for next fee)",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (dueInfo.holidayDays > 0) {
+                        Text(
+                            text = "🏖️ ${dueInfo.holidayDays} Holidays Free",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = IndigoPrimary
+                        )
+                    }
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                LinearProgressIndicator(
+                    progress = { progressFraction },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(4.dp)),
+                    color = if (pendingDues > 0) CoralWarning else IndigoPrimary,
+                    trackColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
+                )
             }
 
             if (isAdmin) {
@@ -596,17 +655,26 @@ fun AddEditStudentDialog(
 }
 
 /**
- * 1. FINANCE HISTORY MODAL (Matches finance-history-modal in v10studendrecord.html)
+ * 1. FINANCE HISTORY & STUDENT DOSSIER MODAL (Includes Improvement 5 Working Days & Holiday Proof)
  */
 @Composable
 fun FinanceHistoryModal(
     student: Student,
     payments: List<PaymentRecord>,
+    attendanceRecords: List<AttendanceRecord>? = null,
+    classesPerCycle: Int = 30,
     isAdmin: Boolean,
     onDismiss: () -> Unit,
     onReceivePayment: () -> Unit
 ) {
-    val dueInfo = remember(student, payments) { FeeCalculator.calculateStudentDues(student, payments) }
+    val dueInfo = remember(student, payments, attendanceRecords, classesPerCycle) {
+        FeeCalculator.calculateStudentDues(
+            student = student,
+            payments = payments,
+            attendanceRecords = attendanceRecords,
+            classesPerCycle = classesPerCycle
+        )
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -619,7 +687,7 @@ fun FinanceHistoryModal(
                 Column {
                     Text(text = "${student.name}'s Profile & History", fontWeight = FontWeight.Bold, fontSize = 17.sp)
                     Text(
-                        text = "Full fee breakdown",
+                        text = "Full 30-day working cycle & fee breakdown",
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.Gray
                     )
@@ -632,7 +700,7 @@ fun FinanceHistoryModal(
         text = {
             Column(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -664,7 +732,7 @@ fun FinanceHistoryModal(
                             modifier = Modifier.fillMaxWidth().padding(12.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text("TIME COMPLETED", fontSize = 10.sp, color = IndigoPrimary, fontWeight = FontWeight.Bold)
+                            Text("CYCLES COMPLETED", fontSize = 10.sp, color = IndigoPrimary, fontWeight = FontWeight.Bold)
                             Text(
                                 text = "${dueInfo.cyclesElapsed} Cycles",
                                 fontSize = 20.sp,
@@ -675,19 +743,46 @@ fun FinanceHistoryModal(
                     }
                 }
 
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(EmeraldLight, RoundedCornerShape(8.dp))
-                        .padding(8.dp),
-                    contentAlignment = Alignment.Center
+                // Working Days & Holiday Proof Card (Improvement 5)
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = IndigoLight.copy(alpha = 0.65f)),
+                    shape = RoundedCornerShape(10.dp)
                 ) {
-                    Text(
-                        text = "Next 30-day cycle completes on: ${dueInfo.nextDueDateStr}",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = EmeraldDark
-                    )
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "📋 Working Days & Holiday Proof",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = IndigoDark
+                        )
+                        Text(
+                            text = "• Total Tuition Open Days: ${dueInfo.daysElapsed} Days (Present: ${dueInfo.presentDays}, Absent/Bunk: ${dueInfo.absentDays})",
+                            fontSize = 11.sp,
+                            color = Color.DarkGray
+                        )
+                        Text(
+                            text = "• Tuition Holidays (Not Charged): ${dueInfo.holidayDays} Days (Free / Extended)",
+                            fontSize = 11.sp,
+                            color = Color.DarkGray
+                        )
+                        if (dueInfo.leaveDays > 0) {
+                            Text(
+                                text = "• Approved Leave (Fee Paused): ${dueInfo.leaveDays} Days",
+                                fontSize = 11.sp,
+                                color = Color(0xFFB45309)
+                            )
+                        }
+                        Text(
+                            text = "• Current Cycle Progress: ${dueInfo.currentCycleProgress} / ${dueInfo.classesPerCycle} Days Completed -> ${if (dueInfo.pendingBalance > 0) "Fee Due Now!" else "${dueInfo.classesLeftInCycle} classes left"}",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (dueInfo.pendingBalance > 0) CoralWarning else EmeraldDark
+                        )
+                    }
                 }
 
                 Text("Payment History", fontWeight = FontWeight.Bold, fontSize = 14.sp)
@@ -698,7 +793,7 @@ fun FinanceHistoryModal(
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .heightIn(max = 220.dp),
+                            .heightIn(max = 180.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         items(payments) { p ->
@@ -753,7 +848,7 @@ fun FinanceHistoryModal(
 }
 
 /**
- * 2. ATTENDANCE HISTORY MODAL (Matches attendance-history-modal in v10studendrecord.html)
+ * 2. ATTENDANCE HISTORY MODAL (Shows Present, Absent/Bunk, Holiday, and Approved Leave)
  */
 @Composable
 fun AttendanceHistoryModal(
@@ -764,8 +859,10 @@ fun AttendanceHistoryModal(
     val sorted = remember(attendanceRecords) { attendanceRecords.sortedByDescending { it.date } }
     val presentCount = sorted.count { it.status == "present" }
     val absentCount = sorted.count { it.status == "absent" }
-    val total = sorted.size
-    val pct = if (total > 0) Math.round((presentCount.toFloat() / total) * 100f) else 0
+    val holidayCount = sorted.count { it.status == "holiday" }
+    val leaveCount = sorted.count { it.status == "leave" }
+    val openTotal = presentCount + absentCount
+    val pct = if (openTotal > 0) Math.round((presentCount.toFloat() / openTotal) * 100f) else 0
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -782,21 +879,21 @@ fun AttendanceHistoryModal(
             }
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Card(
                         modifier = Modifier.weight(1f),
                         colors = CardDefaults.cardColors(containerColor = EmeraldLight)
                     ) {
                         Column(
-                            modifier = Modifier.fillMaxWidth().padding(10.dp),
+                            modifier = Modifier.fillMaxWidth().padding(8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text("$presentCount", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = EmeraldSuccess)
-                            Text("Present", fontSize = 11.sp, color = Color.DarkGray)
+                            Text("$presentCount", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = EmeraldSuccess)
+                            Text("Present", fontSize = 10.sp, color = Color.DarkGray)
                         }
                     }
                     Card(
@@ -804,11 +901,23 @@ fun AttendanceHistoryModal(
                         colors = CardDefaults.cardColors(containerColor = CoralLight)
                     ) {
                         Column(
-                            modifier = Modifier.fillMaxWidth().padding(10.dp),
+                            modifier = Modifier.fillMaxWidth().padding(8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text("$absentCount", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = CoralWarning)
-                            Text("Absent", fontSize = 11.sp, color = Color.DarkGray)
+                            Text("$absentCount", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = CoralWarning)
+                            Text("Absent", fontSize = 10.sp, color = Color.DarkGray)
+                        }
+                    }
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF1F5F9))
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("$holidayCount", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.DarkGray)
+                            Text("Holidays", fontSize = 10.sp, color = Color.DarkGray)
                         }
                     }
                     Card(
@@ -816,13 +925,22 @@ fun AttendanceHistoryModal(
                         colors = CardDefaults.cardColors(containerColor = IndigoLight)
                     ) {
                         Column(
-                            modifier = Modifier.fillMaxWidth().padding(10.dp),
+                            modifier = Modifier.fillMaxWidth().padding(8.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text("$pct%", fontWeight = FontWeight.Bold, fontSize = 20.sp, color = IndigoPrimary)
-                            Text("Attendance", fontSize = 11.sp, color = Color.DarkGray)
+                            Text("$pct%", fontWeight = FontWeight.Bold, fontSize = 18.sp, color = IndigoPrimary)
+                            Text("Rate", fontSize = 10.sp, color = Color.DarkGray)
                         }
                     }
+                }
+
+                if (leaveCount > 0) {
+                    Text(
+                        text = "⏸️ Approved Leave (Fee Paused): $leaveCount Days",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color(0xFFB45309)
+                    )
                 }
 
                 if (sorted.isEmpty()) {
@@ -840,21 +958,31 @@ fun AttendanceHistoryModal(
                                 horizontalArrangement = Arrangement.SpaceBetween,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(FeeCalculator.formatDate(r.date), fontSize = 13.sp)
-                                val isPresent = r.status == "present"
+                                Column {
+                                    Text(FeeCalculator.formatDate(r.date), fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                    if (r.reason.isNotBlank()) {
+                                        Text(r.reason, fontSize = 10.sp, color = Color.Gray)
+                                    }
+                                }
+
+                                val (badgeBg, badgeFg, label) = when (r.status) {
+                                    "present" -> Triple(EmeraldLight, EmeraldDark, "Present (+1d)")
+                                    "absent" -> Triple(CoralLight, CoralWarning, "Absent (+1d)")
+                                    "holiday" -> Triple(Color(0xFFE2E8F0), Color(0xFF334155), "Holiday (0d) 🏖️")
+                                    "leave" -> Triple(Color(0xFFFEF3C7), Color(0xFFB45309), "Leave (0d) ⏸️")
+                                    else -> Triple(Color.LightGray, Color.DarkGray, r.status)
+                                }
+
                                 Box(
                                     modifier = Modifier
-                                        .background(
-                                            if (isPresent) EmeraldLight else CoralLight,
-                                            RoundedCornerShape(12.dp)
-                                        )
+                                        .background(badgeBg, RoundedCornerShape(12.dp))
                                         .padding(horizontal = 8.dp, vertical = 3.dp)
                                 ) {
                                     Text(
-                                        text = if (isPresent) "Present" else "Absent",
+                                        text = label,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
-                                        color = if (isPresent) EmeraldDark else CoralWarning
+                                        color = badgeFg
                                     )
                                 }
                             }

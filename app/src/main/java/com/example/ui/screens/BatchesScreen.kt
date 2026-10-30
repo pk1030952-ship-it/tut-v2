@@ -23,6 +23,7 @@ import com.example.ui.CoachMasterViewModel
 import com.example.ui.theme.CoralWarning
 import com.example.ui.theme.IndigoLight
 import com.example.ui.theme.IndigoPrimary
+import com.example.util.FeeCalculator
 
 @Composable
 fun BatchesScreen(
@@ -33,6 +34,7 @@ fun BatchesScreen(
     val batches by viewModel.batches.collectAsState()
     val students by viewModel.students.collectAsState()
     val staffList by viewModel.staff.collectAsState()
+    val config by viewModel.config.collectAsState()
 
     val teachers = remember(staffList) { staffList.filter { it.role == "Teacher" } }
 
@@ -71,7 +73,7 @@ fun BatchesScreen(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Manage schedules, subjects, teachers, and enrolled students",
+                text = "Manage schedules, subjects, teachers, and custom classes per fee cycle",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
@@ -91,6 +93,7 @@ fun BatchesScreen(
                         val enrolledStudents = students.filter { it.batchId == batch.id }
                         val assignedTeacher = staffList.find { it.id == batch.teacherId }
                         val teacherLabel = assignedTeacher?.name ?: batch.teacherName.ifBlank { "No Teacher" }
+                        val effectiveCycle = FeeCalculator.resolveClassesPerCycle(batch, config)
 
                         Card(
                             modifier = Modifier.fillMaxWidth().testTag("batch_card_${batch.id}"),
@@ -161,17 +164,32 @@ fun BatchesScreen(
                                 }
 
                                 Spacer(modifier = Modifier.height(10.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .background(IndigoLight, RoundedCornerShape(8.dp))
-                                        .padding(horizontal = 10.dp, vertical = 4.dp)
-                                ) {
-                                    Text(
-                                        text = "${enrolledStudents.size} Students Enrolled",
-                                        color = IndigoPrimary,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.Bold
-                                    )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Box(
+                                        modifier = Modifier
+                                            .background(IndigoLight, RoundedCornerShape(8.dp))
+                                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "${enrolledStudents.size} Students Enrolled",
+                                            color = IndigoPrimary,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+
+                                    Box(
+                                        modifier = Modifier
+                                            .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                                    ) {
+                                        Text(
+                                            text = "$effectiveCycle Classes / Fee Cycle",
+                                            color = MaterialTheme.colorScheme.onSurface,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -181,13 +199,17 @@ fun BatchesScreen(
         }
     }
 
-    // Add / Edit Batch Dialog (links teacherId to Staff list just like v10studendrecord.html)
+    // Add / Edit Batch Dialog (includes Classes per Fee Cycle setting - Improvement 1)
     if (showAddDialog) {
         var name by remember { mutableStateOf(editingBatch?.name ?: "") }
         var subject by remember { mutableStateOf(editingBatch?.subject ?: "") }
         var schedule by remember { mutableStateOf(editingBatch?.schedule ?: "") }
         var timing by remember { mutableStateOf(editingBatch?.timing ?: "") }
         var selectedTeacherId by remember { mutableStateOf(editingBatch?.teacherId) }
+        var classesPerCycleStr by remember {
+            val initVal = editingBatch?.classesPerCycle ?: 0
+            mutableStateOf(if (initVal > 0) initVal.toString() else "")
+        }
 
         AlertDialog(
             onDismissRequest = { showAddDialog = false },
@@ -249,6 +271,24 @@ fun BatchesScreen(
                             modifier = Modifier.weight(1f)
                         )
                     }
+
+                    OutlinedTextField(
+                        value = classesPerCycleStr,
+                        onValueChange = { classesPerCycleStr = it.filter { ch -> ch.isDigit() } },
+                        label = { Text("Classes per Fee Cycle (Default: ${config.defaultClassesPerCycle})") },
+                        placeholder = { Text("Leave empty for global default (${config.defaultClassesPerCycle}) or enter e.g. 26, 12") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("batch_classes_per_cycle_input")
+                    )
+
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        listOf("30" to "30 Days", "26" to "26 Days (Excl. Sun)", "12" to "12 Days (MWF)").forEach { (num, lbl) ->
+                            AssistChip(
+                                onClick = { classesPerCycleStr = num },
+                                label = { Text(lbl, fontSize = 10.sp) }
+                            )
+                        }
+                    }
                 }
             },
             confirmButton = {
@@ -256,20 +296,23 @@ fun BatchesScreen(
                     onClick = {
                         if (name.isNotBlank() && subject.isNotBlank()) {
                             val teacherObj = teachers.find { it.id == selectedTeacherId }
+                            val customCycle = classesPerCycleStr.toIntOrNull()?.coerceAtLeast(0) ?: 0
                             val batch = editingBatch?.copy(
                                 name = name.trim(),
                                 subject = subject.trim(),
                                 schedule = schedule.trim(),
                                 timing = timing.trim(),
                                 teacherId = selectedTeacherId,
-                                teacherName = teacherObj?.name ?: ""
+                                teacherName = teacherObj?.name ?: "",
+                                classesPerCycle = customCycle
                             ) ?: Batch(
                                 name = name.trim(),
                                 subject = subject.trim(),
                                 schedule = schedule.trim(),
                                 timing = timing.trim(),
                                 teacherId = selectedTeacherId,
-                                teacherName = teacherObj?.name ?: ""
+                                teacherName = teacherObj?.name ?: "",
+                                classesPerCycle = customCycle
                             )
                             viewModel.saveBatch(batch)
                             showAddDialog = false

@@ -97,4 +97,38 @@ object ShareHelper {
             Toast.makeText(context, "Sharing failed", Toast.LENGTH_SHORT).show()
         }
     }
+
+    fun shareHolidayNoticeOnWhatsApp(
+        context: Context,
+        instituteName: String,
+        dateDisplay: String,
+        reason: String
+    ) {
+        val cleanInst = instituteName.ifBlank { "CoachMaster" }
+        val cleanReason = reason.ifBlank { "Institute Holiday" }
+        val noticeText = "📢 Notice: $cleanInst mein $dateDisplay ko $cleanReason ke karan chutti rahegi. Note: Chutti ke dino ki fee count nahi ki jayegi."
+        try {
+            val whatsappIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, noticeText)
+                setPackage("com.whatsapp")
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            if (whatsappIntent.resolveActivity(context.packageManager) != null) {
+                context.startActivity(whatsappIntent)
+            } else {
+                val chooser = Intent.createChooser(
+                    Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"
+                        putExtra(Intent.EXTRA_TEXT, noticeText)
+                    },
+                    "Broadcast Holiday Notice via..."
+                )
+                chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(chooser)
+            }
+        } catch (e: Exception) {
+            Toast.makeText(context, "Broadcast failed: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+        }
+    }
 }

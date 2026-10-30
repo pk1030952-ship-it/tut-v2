@@ -12,6 +12,7 @@ import com.example.ui.components.MonthlyFinanceData
 import com.example.util.FeeCalculator
 import com.example.util.PdfReceiptGenerator
 import com.example.util.ShareHelper
+import com.example.util.StudentDueInfo
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -135,6 +136,10 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
         _uiState.update { it.copy(currentTab = tab) }
     }
 
+    fun navigateToAttendanceForDate(date: String) {
+        _uiState.update { it.copy(selectedDate = date, currentTab = AppNavDestination.ATTENDANCE) }
+    }
+
     fun setSearchQuery(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
     }
@@ -193,6 +198,17 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
 
     fun selectStudentForPayment(student: Student?) {
         _uiState.update { it.copy(selectedStudentForPayment = student, currentTab = AppNavDestination.FINANCE) }
+    }
+
+    fun calculateDuesForStudent(student: Student): StudentDueInfo {
+        val batch = batches.value.find { it.id == student.batchId }
+        val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, config.value)
+        return FeeCalculator.calculateStudentDues(
+            student = student,
+            payments = payments.value,
+            attendanceRecords = attendance.value,
+            classesPerCycle = cycleLen
+        )
     }
 
     // Student CRUD
@@ -255,8 +271,13 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    // Attendance
-    fun markAttendance(date: String, attendanceMap: Map<String, String>, batchId: String?) {
+    // Attendance & Holiday Actions
+    fun markAttendance(
+        date: String,
+        attendanceMap: Map<String, String>,
+        batchId: String?,
+        reasonMap: Map<String, String> = emptyMap()
+    ) {
         viewModelScope.launch {
             val studentLookup = students.value.associateBy { it.id }
             val records = attendanceMap.map { (studentId, status) ->
@@ -265,12 +286,105 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
                     date = date,
                     studentId = studentId,
                     batchId = batchId ?: studentLookup[studentId]?.batchId,
-                    status = status
+                    status = status,
+                    reason = reasonMap[studentId] ?: ""
                 )
             }
             repository.recordAttendanceBatch(date, records)
             _uiState.update { it.copy(statusMessage = "Attendance saved for ${FeeCalculator.formatDate(date)}") }
         }
+    }
+
+    fun markTuitionHolidayRange(
+        startDate: String,
+        endDate: String,
+        reason: String,
+        batchId: String? = null
+    ) {
+        viewModelScope.launch {
+            val targetStudents = if (batchId == null) {
+                activeStudents.value
+            } else {
+                activeStudents.value.filter { it.batchId == batchId }
+            }
+            val dates = FeeCalculator.generateDateRange(startDate, endDate)
+            val cleanReason = reason.trim().ifBlank { "Tuition Holiday" }
+            val allHolidayRecords = mutableListOf<AttendanceRecord>()
+
+            dates.forEach { d ->
+                targetStudents.forEach { stu ->
+                    allHolidayRecords.add(
+                        AttendanceRecord(
+                            id = "${d}_${stu.id}",
+                            date = d,
+                            studentId = stu.id,
+                            batchId = stu.batchId,
+                            status = "holiday",
+                            reason = cleanReason
+                        )
+                    )
+                }
+            }
+            if (allHolidayRecords.isNotEmpty()) {
+                repository.recordAttendanceBatch(startDate, allHolidayRecords)
+            }
+            val label = if (dates.size == 1) {
+                FeeCalculator.formatDate(startDate)
+            } else {
+                "${FeeCalculator.formatDate(startDate)} - ${FeeCalculator.formatDate(endDate)} (${dates.size} days)"
+            }
+            _uiState.update {
+                it.copy(statusMessage = "🏖️ Marked Tuition Holiday for $label (Fee Frozen)")
+            }
+        }
+    }
+
+    fun markPaidWeeklyOff(date: String, reason: String = "Paid Sunday / Weekly Off") {
+        viewModelScope.launch {
+            val records = activeStudents.value.map { stu ->
+                AttendanceRecord(
+                    id = "${date}_${stu.id}",
+                    date = date,
+                    studentId = stu.id,
+                    batchId = stu.batchId,
+                    status = "present",
+                    reason = reason
+                )
+            }
+            if (records.isNotEmpty()) {
+                repository.recordAttendanceBatch(date, records)
+            }
+            _uiState.update {
+                it.copy(statusMessage = "✅ Marked ${FeeCalculator.formatDate(date)} as Paid Day (+1 Working Day)")
+            }
+        }
+    }
+
+    /**
+     * Finds recent past dates (up to the last 7 days ending yesterday) where active students
+     * were enrolled on or before that date, and NO attendance or holiday record was marked.
+     */
+    fun getUnmarkedPastDates(
+        allAttendance: List<AttendanceRecord> = attendance.value,
+        activeStudentList: List<Student> = activeStudents.value
+    ): List<String> {
+        if (activeStudentList.isEmpty()) return emptyList()
+        val earliestJoining = activeStudentList.minOfOrNull { it.joiningDate.substringBefore("T") } ?: return emptyList()
+        val markedDates = allAttendance.map { it.date }.toSet()
+
+        val unmarked = mutableListOf<String>()
+        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+        val cal = Calendar.getInstance()
+
+        for (daysBack in 1..7) {
+            val checkCal = cal.clone() as Calendar
+            checkCal.add(Calendar.DAY_OF_YEAR, -daysBack)
+            val dateStr = fmt.format(checkCal.time)
+            if (dateStr >= earliestJoining && !markedDates.contains(dateStr)) {
+                unmarked.add(dateStr)
+            }
+        }
+        return unmarked
     }
 
     // Payments
@@ -421,7 +535,13 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
             val studentPayments = payments.value.filter { it.studentId == student.id }
             val batch = batches.value.find { it.id == student.batchId }
             val currentConfig = config.value
-            val dueInfo = FeeCalculator.calculateStudentDues(student, studentPayments)
+            val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, currentConfig)
+            val dueInfo = FeeCalculator.calculateStudentDues(
+                student = student,
+                payments = studentPayments,
+                attendanceRecords = attendance.value,
+                classesPerCycle = cycleLen
+            )
 
             val pdfFile = PdfReceiptGenerator.generateReceiptPdf(
                 context = context,
@@ -442,7 +562,13 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
             val studentAtt = attendance.value.filter { it.studentId == student.id }
             val batch = batches.value.find { it.id == student.batchId }
             val currentConfig = config.value
-            val dueInfo = FeeCalculator.calculateStudentDues(student, studentPayments)
+            val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, currentConfig)
+            val dueInfo = FeeCalculator.calculateStudentDues(
+                student = student,
+                payments = studentPayments,
+                attendanceRecords = attendance.value,
+                classesPerCycle = cycleLen
+            )
 
             val pdfFile = PdfReceiptGenerator.generateFullHistoryPdf(
                 context = context,
@@ -477,7 +603,7 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
     fun getMonthlyFinanceData(): List<MonthlyFinanceData> {
         val result = mutableListOf<MonthlyFinanceData>()
         val cal = Calendar.getInstance()
-        val monthFmt = SimpleDateFormat("MMM yy", Locale("en", "IN"))
+        val monthFmt = SimpleDateFormat("MMM yy", Locale.forLanguageTag("en-IN"))
         val isoMonthFmt = SimpleDateFormat("yyyy-MM", Locale.US)
 
         for (i in 5 downTo 0) {
@@ -503,7 +629,7 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
     fun getMonthlyAttendanceTrend(): List<MonthlyAttendanceData> {
         val result = mutableListOf<MonthlyAttendanceData>()
         val cal = Calendar.getInstance()
-        val monthFmt = SimpleDateFormat("MMM yy", Locale("en", "IN"))
+        val monthFmt = SimpleDateFormat("MMM yy", Locale.forLanguageTag("en-IN"))
         val isoMonthFmt = SimpleDateFormat("yyyy-MM", Locale.US)
 
         for (i in 5 downTo 0) {
@@ -513,7 +639,9 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
             val monthLabel = monthFmt.format(c.time)
             val isoMonth = isoMonthFmt.format(c.time)
 
-            val monthRecords = attendance.value.filter { it.date.startsWith(isoMonth) }
+            val monthRecords = attendance.value.filter {
+                it.date.startsWith(isoMonth) && (it.status == "present" || it.status == "absent")
+            }
             val pct = if (monthRecords.isNotEmpty()) {
                 val present = monthRecords.count { it.status == "present" }
                 Math.round((present.toFloat() / monthRecords.size) * 100f)

@@ -553,3 +553,163 @@ fun GlobalSearchModal(
         }
     )
 }
+
+/**
+ * Holiday Declaration Dialog (Improvement 3):
+ * Supports Single Day or Date Range, Reason presets & custom input, and 1-Tap WhatsApp Broadcast.
+ */
+@Composable
+fun DeclareHolidayDialog(
+    initialDate: String,
+    instituteName: String,
+    onDismiss: () -> Unit,
+    onSaveHoliday: (startDate: String, endDate: String, reason: String, broadcastWhatsApp: Boolean) -> Unit
+) {
+    var isRangeMode by remember { mutableStateOf(false) }
+    var startDate by remember { mutableStateOf(initialDate) }
+    var endDate by remember { mutableStateOf(initialDate) }
+    var reason by remember { mutableStateOf("Tuition Holiday") }
+
+    val quickReasons = listOf(
+        "Sunday Weekly Off",
+        "Diwali / Festival Holiday",
+        "Heavy Rain",
+        "Urgent Work",
+        "National Holiday"
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.BeachAccess, contentDescription = null, tint = IndigoPrimary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Declare Tuition Holiday", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.Default.Close, contentDescription = "Close")
+                }
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    text = "Chutti ke dino ki fee count nahi hogi (0 Billable Days / Fee Freeze).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                )
+
+                // Duration Selector (1 Day vs Date Range)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = !isRangeMode,
+                        onClick = {
+                            isRangeMode = false
+                            endDate = startDate
+                        },
+                        label = { Text("1 Day Only") },
+                        modifier = Modifier.testTag("holiday_mode_single")
+                    )
+                    FilterChip(
+                        selected = isRangeMode,
+                        onClick = { isRangeMode = true },
+                        label = { Text("Date Range (Multiple Days)") },
+                        modifier = Modifier.testTag("holiday_mode_range")
+                    )
+                }
+
+                if (!isRangeMode) {
+                    OutlinedTextField(
+                        value = startDate,
+                        onValueChange = {
+                            startDate = it
+                            endDate = it
+                        },
+                        label = { Text("Holiday Date (YYYY-MM-DD)") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("holiday_start_date_input")
+                    )
+                } else {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = startDate,
+                            onValueChange = { startDate = it },
+                            label = { Text("From (YYYY-MM-DD)") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).testTag("holiday_start_date_input")
+                        )
+                        OutlinedTextField(
+                            value = endDate,
+                            onValueChange = { endDate = it },
+                            label = { Text("To (YYYY-MM-DD)") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f).testTag("holiday_end_date_input")
+                        )
+                    }
+                }
+
+                OutlinedTextField(
+                    value = reason,
+                    onValueChange = { reason = it },
+                    label = { Text("Holiday Reason *") },
+                    placeholder = { Text("e.g., Diwali Holiday / Heavy Rain / Urgent Work") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().testTag("holiday_reason_input")
+                )
+
+                Text("Quick Reason Presets:", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    quickReasons.forEach { preset ->
+                        AssistChip(
+                            onClick = { reason = preset },
+                            label = { Text(preset, fontSize = 11.sp) }
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                // 1-Tap Save + WhatsApp Broadcast Button
+                Button(
+                    onClick = {
+                        val cleanEnd = if (isRangeMode) endDate.trim() else startDate.trim()
+                        onSaveHoliday(startDate.trim(), cleanEnd, reason.trim(), true)
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().testTag("holiday_save_whatsapp_btn")
+                ) {
+                    Icon(Icons.Default.Campaign, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Save & Broadcast on WhatsApp 📢", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val cleanEnd = if (isRangeMode) endDate.trim() else startDate.trim()
+                    onSaveHoliday(startDate.trim(), cleanEnd, reason.trim(), false)
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
+                modifier = Modifier.testTag("holiday_save_only_btn")
+            ) {
+                Text("Save Holiday Only")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        }
+    )
+}
+
