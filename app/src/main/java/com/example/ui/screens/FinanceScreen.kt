@@ -50,6 +50,7 @@ fun FinanceScreen(
     var isStudentDropdownExpanded by remember { mutableStateOf(false) }
 
     var payAmount by remember { mutableStateOf("") }
+    var payDiscount by remember { mutableStateOf("") }
     var payDate by remember { mutableStateOf(FeeCalculator.getTodayStr()) }
     var payMode by remember { mutableStateOf("Cash") }
     var payRemarks by remember { mutableStateOf("") }
@@ -147,12 +148,12 @@ fun FinanceScreen(
         }
 
         if (selectedStudent != null && dueInfo != null) {
-            // 3 Financial Status Cards + Working Days Proof
+            // Financial Status Cards + Working Days Proof
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         // Total Accrued Fees
                         Card(
@@ -161,8 +162,8 @@ fun FinanceScreen(
                             colors = CardDefaults.cardColors(containerColor = IndigoDark)
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
-                                Text("Total Accrued Fees", fontSize = 11.sp, color = Color.White.copy(alpha = 0.7f))
-                                Text(FeeCalculator.formatCurrency(dueInfo.totalAccrued), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = Color.White)
+                                Text("Accrued Fees", fontSize = 11.sp, color = Color.White.copy(alpha = 0.7f))
+                                Text(FeeCalculator.formatCurrency(dueInfo.totalAccrued), fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Color.White)
                                 Text(
                                     text = "Cycles: ${dueInfo.cyclesElapsed} (${dueInfo.currentCycleProgress}/${dueInfo.classesPerCycle}d)",
                                     fontSize = 10.sp,
@@ -178,9 +179,27 @@ fun FinanceScreen(
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
-                                Text("Total Paid History", fontSize = 11.sp, color = Color.Gray)
-                                Text(FeeCalculator.formatCurrency(dueInfo.totalPaid), fontWeight = FontWeight.Bold, fontSize = 18.sp, color = EmeraldSuccess)
-                                Text("${studentPayments.size} transactions", fontSize = 10.sp, color = Color.Gray)
+                                Text("Total Paid", fontSize = 11.sp, color = Color.Gray)
+                                Text(FeeCalculator.formatCurrency(dueInfo.totalPaid), fontWeight = FontWeight.Bold, fontSize = 17.sp, color = EmeraldSuccess)
+                                Text("${studentPayments.size} txns", fontSize = 10.sp, color = Color.Gray)
+                            }
+                        }
+
+                        // Total Discount / Concession Given
+                        Card(
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF3C7))
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text("Discounts", fontSize = 11.sp, color = Color(0xFF92400E))
+                                Text(
+                                    FeeCalculator.formatCurrency(dueInfo.totalDiscount),
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 17.sp,
+                                    color = Color(0xFFB45309)
+                                )
+                                Text("Concession", fontSize = 10.sp, color = Color(0xFF92400E))
                             }
                         }
                     }
@@ -208,7 +227,7 @@ fun FinanceScreen(
                         }
                     }
 
-                    // Pending Balance Card with DUE Badge
+                    // Pending Balance Card with DUE / CLEARED Badge
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
@@ -224,71 +243,198 @@ fun FinanceScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column {
-                                Text("Pending Balance", fontSize = 12.sp, color = Color.DarkGray, fontWeight = FontWeight.Medium)
+                                Text("Pending Balance (Khata)", fontSize = 12.sp, color = Color.DarkGray, fontWeight = FontWeight.Medium)
                                 Text(
                                     FeeCalculator.formatCurrency(dueInfo.pendingBalance),
                                     fontWeight = FontWeight.Bold,
                                     fontSize = 22.sp,
                                     color = if (dueInfo.pendingBalance > 0) CoralWarning else EmeraldDark
                                 )
-                            }
-                            if (dueInfo.pendingBalance > 0) {
-                                Surface(
-                                    color = CoralWarning,
-                                    shape = RoundedCornerShape(6.dp)
-                                ) {
+                                if (dueInfo.totalDiscount > 0) {
                                     Text(
-                                        text = "DUE",
-                                        color = Color.White,
+                                        text = "Includes ${FeeCalculator.formatCurrency(dueInfo.totalDiscount)} total discount waived",
                                         fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        color = Color.DarkGray
                                     )
                                 }
+                            }
+                            Surface(
+                                color = if (dueInfo.pendingBalance > 0) CoralWarning else EmeraldSuccess,
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Text(
+                                    text = if (dueInfo.pendingBalance > 0) "DUE" else "CLEARED",
+                                    color = Color.White,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                )
                             }
                         }
                     }
                 }
             }
 
-            // Record Payment Form (Admin only)
+            // Record Payment & Instant Discount Form (Admin only)
             if (uiState.isAdmin) {
                 item {
+                    val enteredPaid = payAmount.toDoubleOrNull() ?: 0.0
+                    val enteredDiscount = payDiscount.toDoubleOrNull() ?: 0.0
+                    val totalSettledNow = enteredPaid + enteredDiscount
+                    val remainingAfterEntry = (dueInfo.pendingBalance - totalSettledNow).coerceAtLeast(0.0)
+                    val remainingToWaive = (dueInfo.pendingBalance - enteredPaid).coerceAtLeast(0.0)
+
                     Card(
                         shape = RoundedCornerShape(14.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Column(modifier = Modifier.padding(16.dp)) {
-                            Text(
-                                text = "Record Payment",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Receive Fee & Instant Discount",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                if (dueInfo.pendingBalance > 0) {
+                                    AssistChip(
+                                        onClick = {
+                                            payAmount = dueInfo.pendingBalance.toInt().toString()
+                                            payDiscount = ""
+                                        },
+                                        label = {
+                                            Text(
+                                                "Full Due: ${FeeCalculator.formatCurrency(dueInfo.pendingBalance)}",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                    )
+                                }
+                            }
 
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            // Paid Amount + Instant Discount Side-by-Side
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 OutlinedTextField(
                                     value = payAmount,
                                     onValueChange = { payAmount = it },
-                                    label = { Text("Amount Paid (₹) *") },
+                                    label = { Text("Paid Amount (₹) *") },
+                                    placeholder = { Text("e.g. 100") },
                                     singleLine = true,
                                     modifier = Modifier.weight(1f).testTag("pay_amount_input")
                                 )
 
                                 OutlinedTextField(
-                                    value = payDate,
-                                    onValueChange = { payDate = it },
-                                    label = { Text("Date Received") },
+                                    value = payDiscount,
+                                    onValueChange = { payDiscount = it },
+                                    label = { Text("Discount (₹)") },
+                                    placeholder = { Text("e.g. 50") },
                                     singleLine = true,
-                                    modifier = Modifier.weight(1f).testTag("pay_date_input")
+                                    modifier = Modifier.weight(1f).testTag("pay_discount_input")
                                 )
+                            }
+
+                            // 1-Tap Quick Waive Helper when Paid Amount < Pending Balance
+                            if (dueInfo.pendingBalance > 0 && enteredPaid > 0 && remainingToWaive > 0 && enteredDiscount != remainingToWaive) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Surface(
+                                    color = Color(0xFFFEF3C7),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .testTag("auto_waive_discount_chip"),
+                                    onClick = {
+                                        payDiscount = if (remainingToWaive % 1.0 == 0.0) {
+                                            remainingToWaive.toInt().toString()
+                                        } else {
+                                            remainingToWaive.toString()
+                                        }
+                                        if (payRemarks.isBlank()) {
+                                            payRemarks = "Fee settled with ₹${remainingToWaive.toInt()} discount"
+                                        }
+                                    }
+                                ) {
+                                    Row(
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.SpaceBetween
+                                    ) {
+                                        Text(
+                                            text = "🏷️ Baaki ${FeeCalculator.formatCurrency(remainingToWaive)} Discount mein chhod dein (Clear Khata)?",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF92400E),
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Text(
+                                            text = "Apply +${FeeCalculator.formatCurrency(remainingToWaive)}",
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            color = IndigoPrimary
+                                        )
+                                    }
+                                }
+                            }
+
+                            // Live Account Settlement Preview Banner
+                            if (totalSettledNow > 0.0) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Card(
+                                    colors = CardDefaults.cardColors(
+                                        containerColor = if (remainingAfterEntry <= 0.0) EmeraldLight else IndigoLight.copy(alpha = 0.6f)
+                                    ),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Column {
+                                            Text(
+                                                text = "Paid: ${FeeCalculator.formatCurrency(enteredPaid)} + Discount: ${FeeCalculator.formatCurrency(enteredDiscount)} = ${FeeCalculator.formatCurrency(totalSettledNow)}",
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.SemiBold,
+                                                color = Color.DarkGray
+                                            )
+                                            Text(
+                                                text = if (remainingAfterEntry <= 0.0) {
+                                                    "New Pending Balance: ₹0 (Khata Clear ✅)"
+                                                } else {
+                                                    "Remaining Pending Balance: ${FeeCalculator.formatCurrency(remainingAfterEntry)}"
+                                                },
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (remainingAfterEntry <= 0.0) EmeraldDark else IndigoDark
+                                            )
+                                        }
+                                    }
+                                }
                             }
 
                             Spacer(modifier = Modifier.height(10.dp))
 
-                            Text("Payment Mode / Remarks:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
+                            OutlinedTextField(
+                                value = payDate,
+                                onValueChange = { payDate = it },
+                                label = { Text("Date Received (YYYY-MM-DD)") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth().testTag("pay_date_input")
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Text("Payment Mode:", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium)
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -307,7 +453,7 @@ fun FinanceScreen(
                             OutlinedTextField(
                                 value = payRemarks,
                                 onValueChange = { payRemarks = it },
-                                label = { Text("Optional notes... (e.g. Month 2 fee)") },
+                                label = { Text("Optional notes... (e.g. Month 1 fee + concession)") },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth().testTag("pay_remarks_input")
                             )
@@ -317,15 +463,18 @@ fun FinanceScreen(
                             Button(
                                 onClick = {
                                     val amt = payAmount.toDoubleOrNull() ?: 0.0
-                                    if (amt > 0.0) {
+                                    val disc = payDiscount.toDoubleOrNull() ?: 0.0
+                                    if (amt > 0.0 || disc > 0.0) {
                                         viewModel.recordPayment(
                                             studentId = selectedStudent!!.id,
                                             amount = amt,
                                             date = payDate.trim(),
                                             mode = payMode,
-                                            remarks = payRemarks.trim()
+                                            remarks = payRemarks.trim(),
+                                            discount = disc
                                         )
                                         payAmount = ""
+                                        payDiscount = ""
                                         payRemarks = ""
                                     }
                                 },
@@ -398,12 +547,22 @@ fun FinanceScreen(
                             }
 
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    FeeCalculator.formatCurrency(p.amount),
-                                    fontWeight = FontWeight.Bold,
-                                    color = EmeraldSuccess,
-                                    fontSize = 15.sp
-                                )
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        "${FeeCalculator.formatCurrency(p.amount)} Paid",
+                                        fontWeight = FontWeight.Bold,
+                                        color = EmeraldSuccess,
+                                        fontSize = 15.sp
+                                    )
+                                    if (p.discount > 0.0) {
+                                        Text(
+                                            text = "+ ${FeeCalculator.formatCurrency(p.discount)} Discount",
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFFB45309),
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
                                 if (uiState.isAdmin) {
                                     IconButton(
                                         onClick = { paymentToDelete = p },

@@ -23,6 +23,7 @@ data class StudentDueInfo(
     val leaveDays: Int = 0,
     val totalAccrued: Double,
     val totalPaid: Double,
+    val totalDiscount: Double = 0.0,
     val pendingBalance: Double,
     val nextDueDateStr: String,
     val isOverdue: Boolean
@@ -148,10 +149,9 @@ object FeeCalculator {
      * 3. Tuition Holiday (Closed + Holiday): +0 Billable Days (Fee Frozen)
      * 4. Approved Leave (Open + Leave): +0 Billable Days (Fee Paused for student)
      *
-     * When attendance records exist for the student (after joiningDate), billing cycles are strictly
-     * computed from totalBillableDays / classesPerCycle.
-     * If no attendance records are passed (e.g. legacy unit tests calling the 2-arg overload),
-     * it gracefully falls back to calendar days so existing legacy tests continue to pass.
+     * Instant Discount Support:
+     * Both actual cash/online payments (`amount`) and instant concessions (`discount`) settle
+     * the student's accrued fee (`pendingBalance = totalAccrued - totalPaid - totalDiscount`).
      */
     fun calculateStudentDues(
         student: Student,
@@ -162,9 +162,9 @@ object FeeCalculator {
         val effectiveCycleLength = if (classesPerCycle > 0) classesPerCycle else 30
         val cleanJoin = student.joiningDate.substringBefore("T")
 
-        val totalPaid = payments
-            .filter { it.studentId == student.id }
-            .sumOf { it.amount }
+        val studentPayments = payments.filter { it.studentId == student.id }
+        val totalPaid = studentPayments.sumOf { it.amount }
+        val totalDiscount = studentPayments.sumOf { it.discount }
 
         // Filter student's attendance records on or after joiningDate
         val studentAtt = attendanceRecords?.filter { record ->
@@ -183,7 +183,7 @@ object FeeCalculator {
             val classesLeft = effectiveCycleLength - currentCycleProgress
 
             val totalAccrued = completedCycles * student.monthlyFee
-            val pendingBalance = totalAccrued - totalPaid
+            val pendingBalance = totalAccrued - totalPaid - totalDiscount
 
             val nextDueStatusStr = if (pendingBalance > 0) {
                 "Fee Due Now! ($completedCycles Cycle${if (completedCycles > 1) "s" else ""} Completed)"
@@ -203,6 +203,7 @@ object FeeCalculator {
                 leaveDays = leaveDays,
                 totalAccrued = totalAccrued,
                 totalPaid = totalPaid,
+                totalDiscount = totalDiscount,
                 pendingBalance = pendingBalance,
                 nextDueDateStr = nextDueStatusStr,
                 isOverdue = pendingBalance > 0.0
@@ -239,7 +240,7 @@ object FeeCalculator {
         val currentProgress = (daysElapsed % effectiveCycleLength.toLong()).toInt()
         val classesLeft = effectiveCycleLength - currentProgress
         val totalAccrued = cycles * student.monthlyFee
-        val pendingBalance = totalAccrued - totalPaid
+        val pendingBalance = totalAccrued - totalPaid - totalDiscount
 
         val nextDueMs = joinCal.timeInMillis + ((cycles + 1L) * effectiveCycleLength * 24L * 60L * 60L * 1000L)
         val nextDueDateStr = displayDateFormat.format(Date(nextDueMs))
@@ -256,6 +257,7 @@ object FeeCalculator {
             leaveDays = 0,
             totalAccrued = totalAccrued,
             totalPaid = totalPaid,
+            totalDiscount = totalDiscount,
             pendingBalance = pendingBalance,
             nextDueDateStr = nextDueDateStr,
             isOverdue = pendingBalance > 0.0

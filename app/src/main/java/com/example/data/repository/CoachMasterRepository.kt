@@ -501,6 +501,7 @@ class CoachMasterRepository(
                 "transactionId" to p.id,
                 "studentId" to p.studentId,
                 "amountPaid" to p.amount,
+                "discount" to p.discount,
                 "paymentDate" to p.paymentDate,
                 "mode" to p.paymentMode,
                 "remarks" to p.remarks,
@@ -686,6 +687,9 @@ class CoachMasterRepository(
                 val amt = (m["amountPaid"] ?: m["amount"])?.let {
                     (it as? Number)?.toDouble() ?: it.toString().toDoubleOrNull()
                 } ?: 0.0
+                val disc = m["discount"]?.let {
+                    (it as? Number)?.toDouble() ?: it.toString().toDoubleOrNull()
+                } ?: 0.0
                 val payDate = m["paymentDate"]?.toString() ?: FeeCalculator.getTodayStr()
                 val mode = (m["mode"] ?: m["paymentMode"])?.toString() ?: "Cash"
                 val remarks = m["remarks"]?.toString() ?: ""
@@ -694,6 +698,7 @@ class CoachMasterRepository(
                     id = txId,
                     studentId = stuId,
                     amount = amt,
+                    discount = disc,
                     paymentDate = payDate,
                     paymentMode = mode,
                     remarks = remarks,

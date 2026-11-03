@@ -388,17 +388,30 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     // Payments
-    fun recordPayment(studentId: String, amount: Double, date: String, mode: String, remarks: String) {
+    fun recordPayment(
+        studentId: String,
+        amount: Double,
+        date: String,
+        mode: String,
+        remarks: String,
+        discount: Double = 0.0
+    ) {
         viewModelScope.launch {
             val payment = PaymentRecord(
                 studentId = studentId,
                 amount = amount,
+                discount = discount,
                 paymentDate = date,
                 paymentMode = mode,
                 remarks = remarks
             )
             repository.recordPayment(payment)
-            _uiState.update { it.copy(statusMessage = "Payment recorded successfully") }
+            val msg = if (discount > 0.0) {
+                "Recorded ${FeeCalculator.formatCurrency(amount)} Paid + ${FeeCalculator.formatCurrency(discount)} Discount!"
+            } else {
+                "Payment of ${FeeCalculator.formatCurrency(amount)} recorded successfully"
+            }
+            _uiState.update { it.copy(statusMessage = msg) }
         }
     }
 

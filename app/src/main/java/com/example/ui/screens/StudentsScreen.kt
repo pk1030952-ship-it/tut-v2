@@ -428,6 +428,14 @@ fun StudentCardItem(
                     } else {
                         Text("Cleared", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = EmeraldSuccess)
                     }
+                    if (dueInfo.totalDiscount > 0.0) {
+                        Text(
+                            text = "Disc: ${FeeCalculator.formatCurrency(dueInfo.totalDiscount)}",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFFB45309)
+                        )
+                    }
                 }
             }
 
@@ -704,22 +712,40 @@ fun FinanceHistoryModal(
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Card(
                         modifier = Modifier.weight(1f),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                     ) {
                         Column(
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(10.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text("PENDING DUES", fontSize = 10.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
+                            Text("PENDING DUES", fontSize = 9.sp, color = Color.Gray, fontWeight = FontWeight.Bold)
                             Text(
                                 text = FeeCalculator.formatCurrency(dueInfo.pendingBalance),
-                                fontSize = 20.sp,
+                                fontSize = 17.sp,
                                 fontWeight = FontWeight.Bold,
-                                color = CoralWarning
+                                color = if (dueInfo.pendingBalance > 0) CoralWarning else EmeraldSuccess
+                            )
+                        }
+                    }
+
+                    Card(
+                        modifier = Modifier.weight(1f),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFEF3C7))
+                    ) {
+                        Column(
+                            modifier = Modifier.fillMaxWidth().padding(10.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("DISCOUNT", fontSize = 9.sp, color = Color(0xFF92400E), fontWeight = FontWeight.Bold)
+                            Text(
+                                text = FeeCalculator.formatCurrency(dueInfo.totalDiscount),
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFFB45309)
                             )
                         }
                     }
@@ -729,13 +755,13 @@ fun FinanceHistoryModal(
                         colors = CardDefaults.cardColors(containerColor = IndigoLight)
                     ) {
                         Column(
-                            modifier = Modifier.fillMaxWidth().padding(12.dp),
+                            modifier = Modifier.fillMaxWidth().padding(10.dp),
                             horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Text("CYCLES COMPLETED", fontSize = 10.sp, color = IndigoPrimary, fontWeight = FontWeight.Bold)
+                            Text("CYCLES", fontSize = 9.sp, color = IndigoPrimary, fontWeight = FontWeight.Bold)
                             Text(
                                 text = "${dueInfo.cyclesElapsed} Cycles",
-                                fontSize = 20.sp,
+                                fontSize = 17.sp,
                                 fontWeight = FontWeight.Bold,
                                 color = IndigoPrimary
                             )
@@ -811,12 +837,24 @@ fun FinanceHistoryModal(
                                         Text(timeStr, fontSize = 10.sp, color = Color.Gray)
                                     }
                                 }
-                                Text(
-                                    text = FeeCalculator.formatCurrency(p.amount),
-                                    fontWeight = FontWeight.Bold,
-                                    color = EmeraldSuccess,
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
                                     modifier = Modifier.padding(horizontal = 8.dp)
-                                )
+                                ) {
+                                    Text(
+                                        text = FeeCalculator.formatCurrency(p.amount),
+                                        fontWeight = FontWeight.Bold,
+                                        color = EmeraldSuccess
+                                    )
+                                    if (p.discount > 0.0) {
+                                        Text(
+                                            text = "+${FeeCalculator.formatCurrency(p.discount)} Disc.",
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = Color(0xFFB45309)
+                                        )
+                                    }
+                                }
                                 Column(horizontalAlignment = Alignment.End, modifier = Modifier.weight(1f)) {
                                     Text(p.paymentMode, fontSize = 11.sp, color = Color.Gray)
                                     Text(p.remarks.ifBlank { "-" }, fontSize = 11.sp, color = Color.Gray)

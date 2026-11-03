@@ -148,11 +148,12 @@ fun DashboardScreen(
             val sName = studentMap[p.studentId]?.name ?: "Unknown"
             val dStr = p.isoTimestamp.ifBlank { p.paymentDate }
             val ms = if (p.timestamp > 0L) p.timestamp else (runCatching { isoParser.parse(p.paymentDate)?.time }.getOrNull() ?: 0L)
+            val discText = if (p.discount > 0.0) " (+ ${FeeCalculator.formatCurrency(p.discount)} Discount)" else ""
             list.add(
                 DashboardActivityItem(
                     dateStr = dStr,
                     sortTimeMs = ms,
-                    title = "Received ${FeeCalculator.formatCurrency(p.amount)} from $sName",
+                    title = "Received ${FeeCalculator.formatCurrency(p.amount)}$discText from $sName",
                     icon = Icons.Default.CurrencyRupee,
                     iconTint = EmeraldSuccess
                 )

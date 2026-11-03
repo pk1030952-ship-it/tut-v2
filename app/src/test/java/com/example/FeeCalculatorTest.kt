@@ -149,5 +149,54 @@ class FeeCalculatorTest {
         assertEquals(24, dueInfo.currentCycleProgress)
         assertEquals(2, dueInfo.classesLeftInCycle)
     }
+
+    @Test
+    fun testInstantDiscountClearsPendingBalance() {
+        // User scenario: Student completes 30 working days, ₹150 fee becomes due.
+        // Parent pays ₹100 cash and teacher grants ₹50 instant discount.
+        // Pending balance (khata) must become ₹0 (cleared).
+        val student = Student(
+            id = "stu-discount",
+            rollNo = "104",
+            name = "Rohan Verma",
+            phone = "9876543212",
+            monthlyFee = 150.0,
+            joiningDate = "2025-01-01",
+            status = "active"
+        )
+
+        val attendanceRecords = (1..30).map { day ->
+            AttendanceRecord(
+                studentId = student.id,
+                date = String.format("2025-01-%02d", day),
+                status = "present"
+            )
+        }
+
+        val payments = listOf(
+            PaymentRecord(
+                studentId = student.id,
+                amount = 100.0,
+                discount = 50.0,
+                paymentDate = "2025-01-31",
+                paymentMode = "Cash",
+                remarks = "₹50 concession waived"
+            )
+        )
+
+        val dueInfo = FeeCalculator.calculateStudentDues(
+            student = student,
+            payments = payments,
+            attendanceRecords = attendanceRecords,
+            classesPerCycle = 30
+        )
+
+        assertEquals(1, dueInfo.cyclesElapsed)
+        assertEquals(150.0, dueInfo.totalAccrued, 0.01)
+        assertEquals(100.0, dueInfo.totalPaid, 0.01)
+        assertEquals(50.0, dueInfo.totalDiscount, 0.01)
+        assertEquals(0.0, dueInfo.pendingBalance, 0.01)
+        assertEquals(false, dueInfo.isOverdue)
+    }
 }
 

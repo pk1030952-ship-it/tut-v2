@@ -114,33 +114,43 @@ object PdfReceiptGenerator {
 
         // Accrued
         paint.color = Color.parseColor("#64748B")
-        paint.textSize = 9.5f
+        paint.textSize = 9f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-        canvas.drawText("TOTAL ACCRUED (${dueInfo.cyclesElapsed} Cycles)", 56f, currentY + 25f, paint)
+        canvas.drawText("ACCRUED (${dueInfo.cyclesElapsed} CYCLES)", 52f, currentY + 25f, paint)
         paint.color = Color.parseColor("#0F172A")
-        paint.textSize = 14f
+        paint.textSize = 13f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.totalAccrued), 56f, currentY + 48f, paint)
+        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.totalAccrued), 52f, currentY + 48f, paint)
 
         // Total Paid
         paint.color = Color.parseColor("#64748B")
-        paint.textSize = 9.5f
+        paint.textSize = 9f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-        canvas.drawText("TOTAL AMOUNT PAID", 240f, currentY + 25f, paint)
+        canvas.drawText("TOTAL PAID", 190f, currentY + 25f, paint)
         paint.color = Color.parseColor("#10B981")
-        paint.textSize = 14f
+        paint.textSize = 13f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.totalPaid), 240f, currentY + 48f, paint)
+        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.totalPaid), 190f, currentY + 48f, paint)
+
+        // Total Discount
+        paint.color = Color.parseColor("#64748B")
+        paint.textSize = 9f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
+        canvas.drawText("TOTAL DISCOUNT", 310f, currentY + 25f, paint)
+        paint.color = Color.parseColor("#D97706")
+        paint.textSize = 13f
+        paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.totalDiscount), 310f, currentY + 48f, paint)
 
         // Pending Balance
         paint.color = Color.parseColor("#64748B")
-        paint.textSize = 9.5f
+        paint.textSize = 9f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
-        canvas.drawText("REMAINING BALANCE DUE", 400f, currentY + 25f, paint)
+        canvas.drawText("BALANCE DUE", 435f, currentY + 25f, paint)
         paint.color = if (dueInfo.pendingBalance > 0) Color.parseColor("#EF4444") else Color.parseColor("#10B981")
-        paint.textSize = 14f
+        paint.textSize = 13f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.pendingBalance), 400f, currentY + 48f, paint)
+        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.pendingBalance), 435f, currentY + 48f, paint)
 
         // Working Days & Holiday Proof Box (Improvement 5)
         currentY += 80f
@@ -221,7 +231,12 @@ object PdfReceiptGenerator {
                 paint.textAlign = Paint.Align.RIGHT
                 paint.color = Color.parseColor("#10B981")
                 paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                canvas.drawText(FeeCalculator.formatCurrency(payment.amount), (pageWidth - 55).toFloat(), currentY, paint)
+                val amtStr = if (payment.discount > 0.0) {
+                    "${FeeCalculator.formatCurrency(payment.amount)} (+${FeeCalculator.formatCurrency(payment.discount)} Disc)"
+                } else {
+                    FeeCalculator.formatCurrency(payment.amount)
+                }
+                canvas.drawText(amtStr, (pageWidth - 55).toFloat(), currentY, paint)
                 paint.textAlign = Paint.Align.LEFT
                 paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)
 
@@ -316,20 +331,23 @@ object PdfReceiptGenerator {
         canvas.drawRoundRect(40f, y, (pageWidth - 40).toFloat(), y + 54f, 8f, 8f, paint)
         paint.style = Paint.Style.FILL
 
-        paint.textSize = 9f
+        paint.textSize = 8.5f
         paint.color = Color.parseColor("#64748B")
-        canvas.drawText("TOTAL ACCRUED (${dueInfo.cyclesElapsed} CYCLES)", 55f, y + 20f, paint)
-        canvas.drawText("TOTAL PAID", 240f, y + 20f, paint)
-        canvas.drawText("PENDING BALANCE", 410f, y + 20f, paint)
+        canvas.drawText("ACCRUED (${dueInfo.cyclesElapsed} CYCLES)", 52f, y + 20f, paint)
+        canvas.drawText("TOTAL PAID", 190f, y + 20f, paint)
+        canvas.drawText("DISCOUNT", 310f, y + 20f, paint)
+        canvas.drawText("PENDING BALANCE", 425f, y + 20f, paint)
 
-        paint.textSize = 13.5f
+        paint.textSize = 12.5f
         paint.typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
         paint.color = Color.parseColor("#1E293B")
-        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.totalAccrued), 55f, y + 40f, paint)
+        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.totalAccrued), 52f, y + 40f, paint)
         paint.color = Color.parseColor("#10B981")
-        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.totalPaid), 240f, y + 40f, paint)
+        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.totalPaid), 190f, y + 40f, paint)
+        paint.color = Color.parseColor("#D97706")
+        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.totalDiscount), 310f, y + 40f, paint)
         paint.color = if (dueInfo.pendingBalance > 0) Color.parseColor("#EF4444") else Color.parseColor("#10B981")
-        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.pendingBalance), 410f, y + 40f, paint)
+        canvas.drawText(FeeCalculator.formatCurrency(dueInfo.pendingBalance), 425f, y + 40f, paint)
 
         // Working Days & Holiday Proof Box
         y += 66f
@@ -430,9 +448,14 @@ object PdfReceiptGenerator {
                     paint.color = Color.parseColor("#1E293B")
                     canvas.drawText(FeeCalculator.formatDate(p.paymentDate), 50f, y, paint)
                     paint.color = Color.parseColor("#10B981")
-                    canvas.drawText(FeeCalculator.formatCurrency(p.amount), 180f, y, paint)
+                    val paidWithDisc = if (p.discount > 0.0) {
+                        "${FeeCalculator.formatCurrency(p.amount)} (+${FeeCalculator.formatCurrency(p.discount)} Disc)"
+                    } else {
+                        FeeCalculator.formatCurrency(p.amount)
+                    }
+                    canvas.drawText(paidWithDisc, 165f, y, paint)
                     paint.color = Color.parseColor("#475569")
-                    canvas.drawText("${p.paymentMode} - ${p.remarks.ifBlank { "-" }}".take(40), 300f, y, paint)
+                    canvas.drawText("${p.paymentMode} - ${p.remarks.ifBlank { "-" }}".take(36), 315f, y, paint)
                 }
             }
         }

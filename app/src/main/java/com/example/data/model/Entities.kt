@@ -54,7 +54,8 @@ data class AttendanceRecord(
 data class PaymentRecord(
     @PrimaryKey val id: String = UUID.randomUUID().toString(), // Maps to "transactionId" in Firebase
     val studentId: String,
-    val amount: Double, // Maps to "amountPaid" in Firebase
+    val amount: Double, // Maps to "amountPaid" in Firebase (actual cash/online received)
+    val discount: Double = 0.0, // Instant concession/discount waived during fee collection
     val paymentDate: String, // YYYY-MM-DD
     val paymentMode: String = "Cash", // Maps to "mode" ("Cash", "UPI", "Bank Transfer")
     val remarks: String = "",
