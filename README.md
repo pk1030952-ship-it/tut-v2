@@ -1,46 +1,34 @@
-# 🚀 [Project Name]
+# 🎓 CoachMaster — Smart Tuition & Coaching Management App
 
-![GitHub repo size](https://img.shields.io/github/repo-size/[username]/[repo-name]?style=flat-square)
-![GitHub stars](https://img.shields.io/github/stars/[username]/[repo-name]?style=flat-square)
-![GitHub license](https://img.shields.io/github/license/[username]/[repo-name]?style=flat-square)
+## 📲 1-Tap Android APK Download (GitHub se Install Karein)
 
-> [Apne project ke baare mein ek short, catchy tagline likhein — e.g., A fast, responsive, and modern web application built to simplify daily tasks.]
+👉 **[📥 CLICK HERE TO DOWNLOAD LATEST APK (`CoachMaster.apk`)](../../releases/latest/download/CoachMaster.apk)**
 
-🔗 **Live Demo:** [Yahan apna GitHub Pages ya live link daalein](https://your-live-link.com)
-
----
-
-## ✨ Features
-
-- ✅ **Feature 1:** [Jaise: Clean and responsive UI for mobile & desktop]
-- ✅ **Feature 2:** [Jaise: Fast performance with zero page reloads]
-- ✅ **Feature 3:** [Jaise: Local storage support / API integration]
-- ✅ **Feature 4:** [Jaise: Dark mode / Custom theme support]
+Agar upar wale link par click karne par *"Not Found"* dikhe, iska matlab GitHub abhi background mein APK build kar raha hai (isme **2 se 3 minute** lagte hain):
+1. **[⚙️ Yahan Click Karke Build Progress Dekhein (GitHub Actions)](../../actions)** — Jab green tick (✅) aa jaye, tab upar wale **Download APK** link par click karein.
+2. Ya **[📦 Releases Page Open Karein](../../releases)** aur wahan **Assets** ke andar **`CoachMaster.apk`** par tap karke download karein.
 
 ---
 
-## 🛠️ Tech Stack
+## 🔐 Default Admin Login Credentials
 
-- **Frontend:** HTML5, CSS3, JavaScript (ES6+), Tailwind CSS
-- **Backend / Database:** [Agar koi use kiya hai to likhein, warna ye line hata dein]
-- **Tools & Deployment:** Git, GitHub Pages, VS Code
-
----
-
-## 📸 Screenshots
-
-| Home Screen | Dashboard / Feature View |
-| :---: | :---: |
-| ![Home Screenshot](https://via.placeholder.com/400x250?text=Add+Screenshot+1) | ![Feature Screenshot](https://via.placeholder.com/400x250?text=Add+Screenshot+2) |
-
-*(Tip: Apne repo mein ek `screenshots` folder banakar images upload karein aur unka path yahan daalein)*
+- **Quick 4-Digit PIN:** `8833`
+- **Admin Password ("Pankaj jii Login"):** `P@88337`
+- **Biometric Unlock:** Lock screen par Fingerprint icon दबाकर Fingerprint / Face Unlock use karein.
 
 ---
 
-## ⚙️ Installation & Setup
+## ✨ Key Features Included
 
-Agar koi is project ko apne system mein locally chalana chahta hai, to ye steps follow karein:
-
-1. **Repository ko clone karein:**
-   ```bash
-   git clone [https://github.com/](https://github.com/)[username]/[repo-name].git
+1. **Firebase Firestore Collections Architecture (`tution-pro-32a33`):**
+   - `students/{studentId}`, `attendance/{date}`, `payments/{paymentId}` — Unlimited records sync with zero 1MB document limit.
+2. **Excel / CSV Accounting Export & `<75%` Attendance Alert:**
+   - **Reports & Analytics** tab se Fee Ledger, Attendance Register, Expense Report, aur Master Student Summary `.CSV` (Excel) mein export karein.
+   - `<75%` attendance wale students ke parents ko **1-Tap WhatsApp Warning** bhejein.
+3. **Automated Daily Notifications & Nightly Encrypted Backup (`WorkManager`):**
+   - Roz subah **9:00 AM** Roll-Call Reminder notification.
+   - Roz raat **11:00 PM** AES-256-GCM Encrypted JSON Auto-Backup.
+4. **Hardware Biometric Unlock & Guest Privacy Masking:**
+   - Native Android Fingerprint / Face Unlock aur Guest Mode mein mobile numbers masking (`98765*****`).
+5. **60 FPS Smooth Scrolling & Swipe Gestures:**
+   - Student Card par **Right Swipe 👉** = Direct Fee Collection, **Left Swipe 👈** = Direct WhatsApp Message.
