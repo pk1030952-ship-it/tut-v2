@@ -4,7 +4,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -21,8 +20,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.data.model.Student
 import com.example.ui.AppNavDestination
-import com.example.ui.CoachMasterViewModel
+import com.example.ui.DashboardViewModel
 import com.example.ui.components.DeclareHolidayDialog
 import com.example.ui.components.MetricKpiCard
 import com.example.ui.theme.*
@@ -41,19 +42,24 @@ private data class DashboardActivityItem(
 
 @Composable
 fun DashboardScreen(
-    viewModel: CoachMasterViewModel,
+    dashboardViewModel: DashboardViewModel = viewModel(),
+    isAdmin: Boolean = false,
+    onSelectTab: (AppNavDestination) -> Unit = {},
+    onNavigateToAttendanceForDate: (String) -> Unit = {},
+    onSelectStudentForPayment: (Student) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val uiState by viewModel.uiState.collectAsState()
-    val students by viewModel.students.collectAsState()
-    val activeStudents by viewModel.activeStudents.collectAsState()
-    val batches by viewModel.batches.collectAsState()
-    val attendance by viewModel.attendance.collectAsState()
-    val payments by viewModel.payments.collectAsState()
-    val expenses by viewModel.expenses.collectAsState()
-    val exams by viewModel.exams.collectAsState()
-    val config by viewModel.config.collectAsState()
+    val isSyncing by dashboardViewModel.isSyncing.collectAsState()
+    val students by dashboardViewModel.students.collectAsState()
+    val activeStudents by dashboardViewModel.activeStudents.collectAsState()
+    val batches by dashboardViewModel.batches.collectAsState()
+    val attendance by dashboardViewModel.attendance.collectAsState()
+    val payments by dashboardViewModel.payments.collectAsState()
+    val expenses by dashboardViewModel.expenses.collectAsState()
+    val exams by dashboardViewModel.exams.collectAsState()
+    val config by dashboardViewModel.config.collectAsState()
+    val selectedStudentForDossier by dashboardViewModel.selectedStudentForDossier.collectAsState()
 
     var holidayDialogInitialDate by remember { mutableStateOf<String?>(null) }
 
@@ -90,7 +96,6 @@ fun DashboardScreen(
         SimpleDateFormat("yyyy-MM", Locale.US).format(Date())
     }
 
-    // Monthly Open Days vs Holiday Days count for Dashboard Tracker
     val (monthlyOpenDaysCount, monthlyHolidayDaysCount) = remember(attendance, currentMonthStr) {
         val monthGrouped = attendance
             .filter { it.date.startsWith(currentMonthStr) }
@@ -107,9 +112,8 @@ fun DashboardScreen(
         Pair(openDays, holidayDays)
     }
 
-    // Unmarked Past Days (including Sunday detection)
     val unmarkedPastDates = remember(attendance, activeStudents) {
-        viewModel.getUnmarkedPastDates(attendance, activeStudents)
+        dashboardViewModel.getUnmarkedPastDates(attendance, activeStudents)
     }
 
     val monthlyRevenue = remember(payments, currentMonthStr) {
@@ -122,7 +126,6 @@ fun DashboardScreen(
 
     val netProfit = monthlyRevenue - monthlyExpense
 
-    // Overdue students list using the new 30-working-day attendance engine
     val overdueList = remember(activeStudents, payments, attendance, batches, config) {
         activeStudents.map { student ->
             val batch = batches.find { it.id == student.batchId }
@@ -138,7 +141,6 @@ fun DashboardScreen(
             .sortedByDescending { it.second.pendingBalance }
     }
 
-    // Recent Activity list (Payments, Student Admissions, Scheduled Exams - Top 8 like v10studendrecord.html)
     val recentActivities = remember(payments, students, exams) {
         val list = mutableListOf<DashboardActivityItem>()
         val studentMap = students.associateBy { it.id }
@@ -196,7 +198,6 @@ fun DashboardScreen(
         contentPadding = PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Overview Header & Cloud Sync Banner
         item {
             Card(
                 shape = RoundedCornerShape(20.dp),
@@ -224,7 +225,7 @@ fun DashboardScreen(
                         }
 
                         Button(
-                            onClick = { viewModel.triggerCloudSync(pullFirst = true) },
+                            onClick = { dashboardViewModel.triggerCloudSync(pullFirst = true) },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = Color.White.copy(alpha = 0.2f),
                                 contentColor = Color.White
@@ -233,7 +234,7 @@ fun DashboardScreen(
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                             modifier = Modifier.testTag("cloud_sync_button")
                         ) {
-                            if (uiState.isSyncing) {
+                            if (isSyncing) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(14.dp),
                                     color = Color.White,
@@ -252,7 +253,6 @@ fun DashboardScreen(
             }
         }
 
-        // Today's Tuition Status Tracker Card + Unmarked Days / Sunday Alerts (Improvements 1, 2, 3)
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -279,7 +279,6 @@ fun DashboardScreen(
                             )
                         }
 
-                        // Today's Live Status Pill
                         val (badgeBg, badgeFg, badgeText) = when {
                             isTodayHoliday -> Triple(CoralLight, CoralWarning, "CLOSED (Holiday) 🏖️")
                             isTodayOpen -> Triple(EmeraldLight, EmeraldDark, "OPEN 🟢")
@@ -309,8 +308,7 @@ fun DashboardScreen(
                         )
                     }
 
-                    // Today is Sunday Prompt
-                    if (FeeCalculator.isSunday(todayStr) && todayRecords.isEmpty() && uiState.isAdmin) {
+                    if (FeeCalculator.isSunday(todayStr) && todayRecords.isEmpty() && isAdmin) {
                         Card(
                             colors = CardDefaults.cardColors(containerColor = IndigoLight),
                             shape = RoundedCornerShape(10.dp),
@@ -325,7 +323,7 @@ fun DashboardScreen(
                                 )
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(
-                                        onClick = { viewModel.markPaidWeeklyOff(todayStr, "Paid Sunday") },
+                                        onClick = { dashboardViewModel.markPaidWeeklyOff(todayStr, "Paid Sunday") },
                                         colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                         modifier = Modifier.height(32.dp)
@@ -344,13 +342,13 @@ fun DashboardScreen(
                         }
                     }
 
-                    if (uiState.isAdmin) {
+                    if (isAdmin) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             Button(
-                                onClick = { viewModel.navigateToAttendanceForDate(todayStr) },
+                                onClick = { onNavigateToAttendanceForDate(todayStr) },
                                 colors = ButtonDefaults.buttonColors(containerColor = EmeraldSuccess),
                                 shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier.weight(1f).testTag("take_roll_call_today_btn")
@@ -372,8 +370,7 @@ fun DashboardScreen(
                         }
                     }
 
-                    // Red Warning Banner for Unmarked Past Days (Improvement 2)
-                    if (unmarkedPastDates.isNotEmpty() && uiState.isAdmin) {
+                    if (unmarkedPastDates.isNotEmpty() && isAdmin) {
                         val mostRecentUnmarked = unmarkedPastDates.first()
                         val isYesterday = mostRecentUnmarked == FeeCalculator.getYesterdayStr()
                         val isSun = FeeCalculator.isSunday(mostRecentUnmarked)
@@ -404,7 +401,7 @@ fun DashboardScreen(
                                 }
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     Button(
-                                        onClick = { viewModel.navigateToAttendanceForDate(mostRecentUnmarked) },
+                                        onClick = { onNavigateToAttendanceForDate(mostRecentUnmarked) },
                                         colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
                                         contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                                         modifier = Modifier.height(32.dp)
@@ -421,7 +418,7 @@ fun DashboardScreen(
                                     }
                                     if (isSun) {
                                         OutlinedButton(
-                                            onClick = { viewModel.markPaidWeeklyOff(mostRecentUnmarked, "Paid Sunday") },
+                                            onClick = { dashboardViewModel.markPaidWeeklyOff(mostRecentUnmarked, "Paid Sunday") },
                                             contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                             modifier = Modifier.height(32.dp)
                                         ) {
@@ -436,7 +433,6 @@ fun DashboardScreen(
             }
         }
 
-        // 4 KPI Metric Cards matching v10studendrecord.html
         item {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Row(
@@ -487,7 +483,6 @@ fun DashboardScreen(
             }
         }
 
-        // Quick Navigation Bar (Includes Staff, Timetable, Reports, Expenses)
         item {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -497,29 +492,28 @@ fun DashboardScreen(
                     label = "Staff",
                     icon = Icons.Default.Badge,
                     modifier = Modifier.weight(1f)
-                ) { viewModel.selectTab(AppNavDestination.STAFF) }
+                ) { onSelectTab(AppNavDestination.STAFF) }
 
                 QuickActionButton(
                     label = "Timetable",
                     icon = Icons.Default.TableChart,
                     modifier = Modifier.weight(1f)
-                ) { viewModel.selectTab(AppNavDestination.TIMETABLE) }
+                ) { onSelectTab(AppNavDestination.TIMETABLE) }
 
                 QuickActionButton(
                     label = "Exams",
                     icon = Icons.Default.Description,
                     modifier = Modifier.weight(1f)
-                ) { viewModel.selectTab(AppNavDestination.EXAMS) }
+                ) { onSelectTab(AppNavDestination.EXAMS) }
 
                 QuickActionButton(
                     label = "Reports",
                     icon = Icons.Default.ShowChart,
                     modifier = Modifier.weight(1f)
-                ) { viewModel.selectTab(AppNavDestination.REPORTS) }
+                ) { onSelectTab(AppNavDestination.REPORTS) }
             }
         }
 
-        // Section 1: Urgent Action: Overdue Fees
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -575,7 +569,7 @@ fun DashboardScreen(
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .clickable { viewModel.openStudentDossier(student) }
+                                    .clickable { dashboardViewModel.openStudentDossier(student) }
                                     .padding(vertical = 10.dp)
                                     .testTag("overdue_student_${student.id}"),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -602,9 +596,9 @@ fun DashboardScreen(
                                     modifier = Modifier.padding(horizontal = 12.dp)
                                 )
 
-                                if (uiState.isAdmin) {
+                                if (isAdmin) {
                                     Button(
-                                        onClick = { viewModel.selectStudentForPayment(student) },
+                                        onClick = { onSelectStudentForPayment(student) },
                                         colors = ButtonDefaults.buttonColors(
                                             containerColor = IndigoLight,
                                             contentColor = IndigoPrimary
@@ -624,7 +618,6 @@ fun DashboardScreen(
             }
         }
 
-        // Section 2: Recent Activity (Matches dash-activity-list in v10studendrecord.html)
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -701,14 +694,13 @@ fun DashboardScreen(
         }
     }
 
-    // Declare Holiday Dialog from Dashboard
     if (holidayDialogInitialDate != null) {
         DeclareHolidayDialog(
             initialDate = holidayDialogInitialDate!!,
             instituteName = config.instituteName,
             onDismiss = { holidayDialogInitialDate = null },
             onSaveHoliday = { start, end, reason, broadcastWhatsApp ->
-                viewModel.markTuitionHolidayRange(start, end, reason)
+                dashboardViewModel.markTuitionHolidayRange(start, end, reason)
                 holidayDialogInitialDate = null
                 if (broadcastWhatsApp) {
                     val dateDisplay = if (start == end) {
@@ -727,9 +719,8 @@ fun DashboardScreen(
         )
     }
 
-    // Finance History Modal when tapping a student's name on Dashboard
-    if (uiState.selectedStudentForDossier != null) {
-        val dossierStudent = uiState.selectedStudentForDossier!!
+    if (selectedStudentForDossier != null) {
+        val dossierStudent = selectedStudentForDossier!!
         val batch = batches.find { it.id == dossierStudent.batchId }
         val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, config)
         FinanceHistoryModal(
@@ -737,11 +728,11 @@ fun DashboardScreen(
             payments = payments.filter { it.studentId == dossierStudent.id },
             attendanceRecords = attendance.filter { it.studentId == dossierStudent.id },
             classesPerCycle = cycleLen,
-            isAdmin = uiState.isAdmin,
-            onDismiss = { viewModel.closeStudentDossier() },
+            isAdmin = isAdmin,
+            onDismiss = { dashboardViewModel.closeStudentDossier() },
             onReceivePayment = {
-                viewModel.closeStudentDossier()
-                viewModel.selectStudentForPayment(dossierStudent)
+                dashboardViewModel.closeStudentDossier()
+                onSelectStudentForPayment(dossierStudent)
             }
         )
     }

@@ -10,6 +10,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -21,33 +22,38 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.AttendanceRecord
 import com.example.data.model.Batch
 import com.example.data.model.CommunicationLog
 import com.example.data.model.PaymentRecord
 import com.example.data.model.Student
-import com.example.ui.CoachMasterViewModel
+import com.example.ui.StudentViewModel
 import com.example.ui.theme.*
 import com.example.util.FeeCalculator
+import com.example.util.SecurityUtils
 import com.example.util.StudentDueInfo
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StudentsScreen(
-    viewModel: CoachMasterViewModel,
+    studentViewModel: StudentViewModel = viewModel(),
+    isAdmin: Boolean = false,
+    onSelectStudentForPayment: (Student) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val uiState by viewModel.uiState.collectAsState()
-    val students by viewModel.students.collectAsState()
-    val batches by viewModel.batches.collectAsState()
-    val payments by viewModel.payments.collectAsState()
-    val attendance by viewModel.attendance.collectAsState()
-    val communications by viewModel.communications.collectAsState()
-    val config by viewModel.config.collectAsState()
+    val studentUiState by studentViewModel.studentUiState.collectAsState()
+    val students by studentViewModel.students.collectAsState()
+    val batches by studentViewModel.batches.collectAsState()
+    val payments by studentViewModel.payments.collectAsState()
+    val attendance by studentViewModel.attendance.collectAsState()
+    val communications by studentViewModel.communications.collectAsState()
+    val config by studentViewModel.config.collectAsState()
 
     var searchQuery by remember { mutableStateOf("") }
     var selectedBatchId by remember { mutableStateOf<String?>(null) }
@@ -57,7 +63,6 @@ fun StudentsScreen(
 
     val batchNameMap = remember(batches) { batches.associate { it.id to it.name } }
 
-    // Filter students by name, phone, roll, or batch name (matching v10studendrecord.html)
     val filteredStudents = remember(students, searchQuery, selectedBatchId, batchNameMap) {
         students.filter { student ->
             val bName = student.batchId?.let { batchNameMap[it] } ?: ""
@@ -73,7 +78,7 @@ fun StudentsScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         floatingActionButton = {
-            if (uiState.isAdmin) {
+            if (isAdmin) {
                 FloatingActionButton(
                     onClick = {
                         editingStudent = null
@@ -107,7 +112,6 @@ fun StudentsScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Search Input
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
@@ -129,7 +133,6 @@ fun StudentsScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Batch filter chips
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
@@ -197,16 +200,16 @@ fun StudentsScreen(
                             student = student,
                             batchName = batch?.name ?: "None",
                             dueInfo = dueInfo,
-                            isAdmin = uiState.isAdmin,
-                            onCardClick = { viewModel.openStudentDossier(student) },
+                            isAdmin = isAdmin,
+                            onCardClick = { studentViewModel.openStudentDossier(student) },
                             onEditClick = {
                                 editingStudent = student
                                 showAddDialog = true
                             },
-                            onAttendanceHistoryClick = { viewModel.openAttendanceHistoryModal(student) },
-                            onCommLogClick = { viewModel.openCommLogModal(student) },
-                            onShareOptionsClick = { viewModel.openShareOptionsModal(student) },
-                            onToggleStatus = { viewModel.toggleStudentStatus(student) },
+                            onAttendanceHistoryClick = { studentViewModel.openAttendanceHistoryModal(student) },
+                            onCommLogClick = { studentViewModel.openCommLogModal(student) },
+                            onShareOptionsClick = { studentViewModel.openShareOptionsModal(student) },
+                            onToggleStatus = { studentViewModel.toggleStudentStatus(student) },
                             onDeleteClick = { studentToDelete = student }
                         )
                     }
@@ -215,20 +218,18 @@ fun StudentsScreen(
         }
     }
 
-    // Add / Edit Student Dialog
     if (showAddDialog) {
         AddEditStudentDialog(
             existingStudent = editingStudent,
             batches = batches,
             onDismiss = { showAddDialog = false },
             onSave = { student ->
-                viewModel.saveStudent(student)
+                studentViewModel.saveStudent(student)
                 showAddDialog = false
             }
         )
     }
 
-    // Delete Confirmation Dialog
     if (studentToDelete != null) {
         AlertDialog(
             onDismissRequest = { studentToDelete = null },
@@ -237,7 +238,7 @@ fun StudentsScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        studentToDelete?.let { viewModel.deleteStudent(it.id) }
+                        studentToDelete?.let { studentViewModel.deleteStudent(it.id) }
                         studentToDelete = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = CoralWarning)
@@ -253,9 +254,8 @@ fun StudentsScreen(
         )
     }
 
-    // 1. Finance History & Profile Modal (with Working Days & Holiday Proof)
-    if (uiState.selectedStudentForDossier != null) {
-        val s = uiState.selectedStudentForDossier!!
+    if (studentUiState.selectedStudentForDossier != null) {
+        val s = studentUiState.selectedStudentForDossier!!
         val batch = batches.find { it.id == s.batchId }
         val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, config)
         FinanceHistoryModal(
@@ -263,55 +263,52 @@ fun StudentsScreen(
             payments = payments.filter { it.studentId == s.id },
             attendanceRecords = attendance.filter { it.studentId == s.id },
             classesPerCycle = cycleLen,
-            isAdmin = uiState.isAdmin,
-            onDismiss = { viewModel.closeStudentDossier() },
+            isAdmin = isAdmin,
+            onDismiss = { studentViewModel.closeStudentDossier() },
             onReceivePayment = {
-                viewModel.closeStudentDossier()
-                viewModel.selectStudentForPayment(s)
+                studentViewModel.closeStudentDossier()
+                onSelectStudentForPayment(s)
             }
         )
     }
 
-    // 2. Attendance History Modal
-    if (uiState.selectedStudentForAttendanceHistory != null) {
-        val s = uiState.selectedStudentForAttendanceHistory!!
+    if (studentUiState.selectedStudentForAttendanceHistory != null) {
+        val s = studentUiState.selectedStudentForAttendanceHistory!!
         AttendanceHistoryModal(
             student = s,
             attendanceRecords = attendance.filter { it.studentId == s.id },
-            onDismiss = { viewModel.closeAttendanceHistoryModal() }
+            onDismiss = { studentViewModel.closeAttendanceHistoryModal() }
         )
     }
 
-    // 3. Communication Log Modal
-    if (uiState.selectedStudentForCommLog != null) {
-        val s = uiState.selectedStudentForCommLog!!
+    if (studentUiState.selectedStudentForCommLog != null) {
+        val s = studentUiState.selectedStudentForCommLog!!
         CommunicationLogModal(
             student = s,
             logs = communications.filter { it.studentId == s.id },
-            isAdmin = uiState.isAdmin,
-            onDismiss = { viewModel.closeCommLogModal() },
-            onAddNote = { date, note -> viewModel.addCommunicationLog(s.id, note, date) },
-            onDeleteNote = { log -> viewModel.deleteCommunicationLog(log) }
+            isAdmin = isAdmin,
+            onDismiss = { studentViewModel.closeCommLogModal() },
+            onAddNote = { date, note -> studentViewModel.addCommunicationLog(s.id, note, date) },
+            onDeleteNote = { log -> studentViewModel.deleteCommunicationLog(log) }
         )
     }
 
-    // 4. Share & Print Options Modal
-    if (uiState.selectedStudentForShareOptions != null) {
-        val s = uiState.selectedStudentForShareOptions!!
+    if (studentUiState.selectedStudentForShareOptions != null) {
+        val s = studentUiState.selectedStudentForShareOptions!!
         ShareOptionsModal(
             student = s,
-            onDismiss = { viewModel.closeShareOptionsModal() },
+            onDismiss = { studentViewModel.closeShareOptionsModal() },
             onPrintFullHistory = {
-                viewModel.closeShareOptionsModal()
-                viewModel.generateAndShareFullHistory(context, s)
+                studentViewModel.closeShareOptionsModal()
+                studentViewModel.generateAndShareFullHistory(context, s)
             },
             onPrintOfficialReceipt = {
-                viewModel.closeShareOptionsModal()
-                viewModel.generateAndShareReceipt(context, s, preferWhatsApp = false)
+                studentViewModel.closeShareOptionsModal()
+                studentViewModel.generateAndShareReceipt(context, s, preferWhatsApp = false)
             },
             onSendWhatsAppReceipt = {
-                viewModel.closeShareOptionsModal()
-                viewModel.generateAndShareReceipt(context, s, preferWhatsApp = true)
+                studentViewModel.closeShareOptionsModal()
+                studentViewModel.generateAndShareReceipt(context, s, preferWhatsApp = true)
             }
         )
     }
@@ -439,7 +436,6 @@ fun StudentCardItem(
                 }
             }
 
-            // Student Card 30-Day Working Classes Progress Bar & Counter
             Spacer(modifier = Modifier.height(10.dp))
             Column(
                 modifier = Modifier
@@ -488,23 +484,18 @@ fun StudentCardItem(
                         .padding(top = 4.dp),
                     horizontalArrangement = Arrangement.SpaceEvenly
                 ) {
-                    // 1. Edit Profile
                     IconButton(onClick = onEditClick, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.Edit, contentDescription = "Edit Profile", tint = IndigoPrimary, modifier = Modifier.size(18.dp))
                     }
-                    // 2. Attendance History
                     IconButton(onClick = onAttendanceHistoryClick, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.CalendarMonth, contentDescription = "Attendance History", tint = EmeraldSuccess, modifier = Modifier.size(18.dp))
                     }
-                    // 3. Communication Log
                     IconButton(onClick = onCommLogClick, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.Comment, contentDescription = "Communication Log", tint = Color(0xFF0EA5E9), modifier = Modifier.size(18.dp))
                     }
-                    // 4. Share & Print Options
                     IconButton(onClick = onShareOptionsClick, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.Share, contentDescription = "Share & Print Options", tint = Color(0xFF8B5CF6), modifier = Modifier.size(18.dp))
                     }
-                    // 5. Toggle Active Status
                     IconButton(onClick = onToggleStatus, modifier = Modifier.size(32.dp)) {
                         Icon(
                             imageVector = if (student.status == "active") Icons.Default.PersonOff else Icons.Default.HowToReg,
@@ -513,7 +504,6 @@ fun StudentCardItem(
                             modifier = Modifier.size(18.dp)
                         )
                     }
-                    // 6. Delete Permanently
                     IconButton(onClick = onDeleteClick, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.DeleteOutline, contentDescription = "Delete Permanently", tint = Color.Gray, modifier = Modifier.size(18.dp))
                     }
@@ -549,28 +539,57 @@ fun AddEditStudentDialog(
                     .padding(vertical = 4.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                OutlinedTextField(
-                    value = rollNo,
-                    onValueChange = { rollNo = it },
-                    label = { Text("Admission No / ID") },
-                    placeholder = { Text("Auto-generated if empty") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth().testTag("student_form_roll")
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedTextField(
+                        value = rollNo,
+                        onValueChange = {
+                            rollNo = it
+                            errorMessage = null
+                        },
+                        label = { Text("Roll No / Admission ID *") },
+                        placeholder = { Text("e.g., 101 or STU101") },
+                        singleLine = true,
+                        isError = errorMessage != null && rollNo.isBlank(),
+                        modifier = Modifier.weight(1f).testTag("student_form_roll")
+                    )
+                    AssistChip(
+                        onClick = {
+                            rollNo = "STU${System.currentTimeMillis().toString().takeLast(4)}"
+                            errorMessage = null
+                        },
+                        label = { Text("Auto ID", fontSize = 11.sp) }
+                    )
+                }
 
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
+                    onValueChange = {
+                        name = it
+                        errorMessage = null
+                    },
                     label = { Text("Full Name *") },
                     singleLine = true,
+                    isError = errorMessage != null && name.isBlank(),
                     modifier = Modifier.fillMaxWidth().testTag("student_form_name")
                 )
 
                 OutlinedTextField(
                     value = phone,
-                    onValueChange = { phone = it },
-                    label = { Text("Contact Number *") },
+                    onValueChange = {
+                        phone = it.filter { ch -> ch.isDigit() }.take(10)
+                        errorMessage = null
+                    },
+                    label = { Text("10-Digit Mobile Number *") },
+                    placeholder = { Text("e.g., 9876543210") },
                     singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    isError = errorMessage != null && !SecurityUtils.isValidTenDigitPhone(phone),
+                    supportingText = {
+                        Text("${phone.length}/10 digits", fontSize = 10.sp)
+                    },
                     modifier = Modifier.fillMaxWidth().testTag("student_form_phone")
                 )
 
@@ -598,9 +617,14 @@ fun AddEditStudentDialog(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
                         value = monthlyFee,
-                        onValueChange = { monthlyFee = it },
+                        onValueChange = {
+                            monthlyFee = it
+                            errorMessage = null
+                        },
                         label = { Text("Monthly Fee (₹) *") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        isError = errorMessage != null && !SecurityUtils.isValidPositiveAmount(monthlyFee),
                         modifier = Modifier.weight(1f).testTag("student_form_fee")
                     )
 
@@ -614,23 +638,38 @@ fun AddEditStudentDialog(
                 }
 
                 if (errorMessage != null) {
-                    Text(
-                        text = errorMessage!!,
-                        color = MaterialTheme.colorScheme.error,
-                        fontSize = 12.sp
-                    )
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = CoralLight),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("student_form_error")
+                    ) {
+                        Text(
+                            text = errorMessage!!,
+                            color = CoralWarning,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.padding(10.dp)
+                        )
+                    }
                 }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    if (name.isBlank() || phone.isBlank() || monthlyFee.isBlank()) {
-                        errorMessage = "Name, Contact Number, and Monthly Fee are required."
+                    val validationError = SecurityUtils.validateStudentInput(
+                        rollNo = rollNo,
+                        name = name,
+                        phone = phone,
+                        monthlyFeeStr = monthlyFee
+                    )
+                    if (validationError != null) {
+                        errorMessage = validationError
                         return@Button
                     }
-                    val feeDouble = monthlyFee.toDoubleOrNull() ?: 0.0
-                    val cleanRoll = rollNo.trim().ifBlank { "STU${System.currentTimeMillis().toString().takeLast(4)}" }
+
+                    val feeDouble = monthlyFee.trim().toDouble()
+                    val cleanRoll = rollNo.trim()
 
                     val student = existingStudent?.copy(
                         name = name.trim(),

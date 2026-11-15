@@ -5,6 +5,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -15,12 +16,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.CoachMasterViewModel
 import com.example.ui.theme.CoralWarning
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IndigoPrimary
+import com.example.util.SecurityUtils
 
 @Composable
 fun SettingsScreen(
@@ -28,7 +32,6 @@ fun SettingsScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val uiState by viewModel.uiState.collectAsState()
     val config by viewModel.config.collectAsState()
 
     var instName by remember(config.instituteName) { mutableStateOf(config.instituteName) }
@@ -38,13 +41,14 @@ fun SettingsScreen(
         mutableStateOf(config.defaultClassesPerCycle.toString())
     }
 
-    var adminPin by remember(config.adminPin) { mutableStateOf(config.adminPin) }
-    var adminPassword by remember(config.adminPassword) { mutableStateOf(config.adminPassword) }
+    var newAdminPin by remember { mutableStateOf("") }
+    var newAdminPassword by remember { mutableStateOf("") }
+    var securityError by remember { mutableStateOf<String?>(null) }
+
     var showResetConfirm by remember { mutableStateOf(false) }
     var showDemoConfirm by remember { mutableStateOf(false) }
     var pendingRestoreJson by remember { mutableStateOf<String?>(null) }
 
-    // File Picker for Restore from Backup JSON
     val importLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
@@ -71,7 +75,7 @@ fun SettingsScreen(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Manage institute profile, fee cycle rules, cloud data, and application settings.",
+                text = "Manage institute profile, fee cycle rules, cloud collections, and hashed security credentials.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
             )
@@ -119,9 +123,10 @@ fun SettingsScreen(
 
                     OutlinedTextField(
                         value = instPhone,
-                        onValueChange = { instPhone = it },
-                        label = { Text("Contact Phone") },
+                        onValueChange = { instPhone = it.filter { ch -> ch.isDigit() }.take(10) },
+                        label = { Text("Contact Phone (10 Digits)") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth().testTag("setting_inst_phone")
                     )
 
@@ -132,6 +137,7 @@ fun SettingsScreen(
                         onValueChange = { defaultClassesStr = it.filter { ch -> ch.isDigit() } },
                         label = { Text("Default Classes per Fee Cycle (e.g. 30 or 26)") },
                         singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         modifier = Modifier.fillMaxWidth().testTag("setting_default_classes_cycle")
                     )
 
@@ -173,7 +179,7 @@ fun SettingsScreen(
             }
         }
 
-        // 2. Data Portability (Export Backup JSON & Restore from Backup JSON)
+        // 2. Data Portability & Firestore Collections Architecture
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -186,7 +192,7 @@ fun SettingsScreen(
                         Icon(Icons.Default.Storage, contentDescription = null, tint = EmeraldSuccess)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Data Portability & Cloud Sync",
+                            text = "Data Portability & Cloud Collections",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -194,7 +200,7 @@ fun SettingsScreen(
 
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Connected to Firebase Project: tution-pro-32a33 (tuitionAppDb/mainData). Export a local JSON backup or restore data to the Cloud database.",
+                        text = "Firestore Collections Architecture Active: students/{studentId}, attendance/{date}, payments/{paymentId}. Unlimited scalability with no 1MB limit.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
@@ -253,7 +259,7 @@ fun SettingsScreen(
             }
         }
 
-        // 3. Security & PIN / Password Card
+        // 3. Security & Hashed PIN / Password Card
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -266,29 +272,57 @@ fun SettingsScreen(
                         Icon(Icons.Default.Lock, contentDescription = null, tint = IndigoPrimary)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Admin Security (Password & PIN)",
+                            text = "Admin Security (SHA-256 Hashed)",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                     }
 
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Your Admin PIN & Password are encrypted with salted SHA-256 hashing in Room DB.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedTextField(
-                            value = adminPassword,
-                            onValueChange = { adminPassword = it },
-                            label = { Text("Admin Password") },
+                            value = newAdminPassword,
+                            onValueChange = {
+                                newAdminPassword = it
+                                securityError = null
+                            },
+                            label = { Text("New Admin Password") },
+                            placeholder = { Text("Leave blank to keep") },
                             singleLine = true,
-                            modifier = Modifier.weight(1f)
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.weight(1f).testTag("setting_admin_password")
                         )
 
                         OutlinedTextField(
-                            value = adminPin,
-                            onValueChange = { if (it.length <= 4) adminPin = it },
-                            label = { Text("4-Digit PIN") },
+                            value = newAdminPin,
+                            onValueChange = {
+                                newAdminPin = it.filter { ch -> ch.isDigit() }.take(4)
+                                securityError = null
+                            },
+                            label = { Text("New 4-Digit PIN") },
+                            placeholder = { Text("4 digits") },
                             singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            visualTransformation = PasswordVisualTransformation(),
                             modifier = Modifier.weight(1f).testTag("setting_admin_pin")
+                        )
+                    }
+
+                    if (securityError != null) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = securityError!!,
+                            color = CoralWarning,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium
                         )
                     }
 
@@ -296,18 +330,41 @@ fun SettingsScreen(
 
                     Button(
                         onClick = {
-                            if (adminPin.length == 4 && adminPassword.isNotBlank()) {
-                                viewModel.updateConfig(
-                                    config.copy(
-                                        adminPin = adminPin,
-                                        adminPassword = adminPassword.trim()
-                                    )
-                                )
+                            if (newAdminPin.isBlank() && newAdminPassword.isBlank()) {
+                                securityError = "Enter a new 4-digit PIN or a new Admin Password to update."
+                                return@Button
                             }
+                            if (newAdminPin.isNotBlank() && (newAdminPin.length != 4 || !newAdminPin.all { it.isDigit() })) {
+                                securityError = "PIN must be exactly 4 numeric digits."
+                                return@Button
+                            }
+                            if (newAdminPassword.isNotBlank() && newAdminPassword.trim().length < 4) {
+                                securityError = "Password must be at least 4 characters."
+                                return@Button
+                            }
+                            val updatedPinHash = if (newAdminPin.isNotBlank()) {
+                                SecurityUtils.hashSecret(newAdminPin)
+                            } else {
+                                config.adminPin
+                            }
+                            val updatedPasswordHash = if (newAdminPassword.isNotBlank()) {
+                                SecurityUtils.hashSecret(newAdminPassword.trim())
+                            } else {
+                                config.adminPassword
+                            }
+                            viewModel.updateConfig(
+                                config.copy(
+                                    adminPin = updatedPinHash,
+                                    adminPassword = updatedPasswordHash
+                                )
+                            )
+                            newAdminPin = ""
+                            newAdminPassword = ""
+                            securityError = null
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth().testTag("update_security_btn")
                     ) {
                         Text("Update Security Credentials")
                     }
@@ -362,7 +419,7 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { pendingRestoreJson = null },
             title = { Text("Overwrite Cloud Database?") },
-            text = { Text("Restoring this backup will overwrite current data in both the app and Firebase Cloud. Continue?") },
+            text = { Text("Restoring this backup will overwrite current data in both the app and Firebase Cloud Collections. Continue?") },
             confirmButton = {
                 Button(
                     onClick = {
@@ -384,7 +441,7 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showResetConfirm = false },
             title = { Text("CRITICAL: Factory Reset") },
-            text = { Text("Permanently delete ALL data from the app and Firebase Cloud Database? This CANNOT be undone.") },
+            text = { Text("Permanently delete ALL data from the app and Firebase Cloud Collections? This CANNOT be undone.") },
             confirmButton = {
                 Button(
                     onClick = {

@@ -16,8 +16,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.example.ui.AppNavDestination
-import com.example.ui.CoachMasterViewModel
+import com.example.ui.*
 import com.example.ui.components.GlobalSearchModal
 import com.example.ui.components.PinLockScreen
 import com.example.ui.screens.*
@@ -42,11 +41,17 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CoachMasterApp(viewModel: CoachMasterViewModel = viewModel()) {
+fun CoachMasterApp(
+    viewModel: CoachMasterViewModel = viewModel(),
+    dashboardViewModel: DashboardViewModel = viewModel(),
+    studentViewModel: StudentViewModel = viewModel(),
+    attendanceViewModel: AttendanceViewModel = viewModel(),
+    financeViewModel: FinanceViewModel = viewModel()
+) {
     val uiState by viewModel.uiState.collectAsState()
     val config by viewModel.config.collectAsState()
-    val students by viewModel.students.collectAsState()
-    val batches by viewModel.batches.collectAsState()
+    val students by studentViewModel.students.collectAsState()
+    val batches by studentViewModel.batches.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
     var showMoreMenu by remember { mutableStateOf(false) }
@@ -97,7 +102,6 @@ fun CoachMasterApp(viewModel: CoachMasterViewModel = viewModel()) {
                         }
                     },
                     actions = {
-                        // Global Search Button (Ctrl+K equivalent)
                         IconButton(
                             onClick = { viewModel.openGlobalSearch() },
                             modifier = Modifier.testTag("top_nav_search")
@@ -105,7 +109,6 @@ fun CoachMasterApp(viewModel: CoachMasterViewModel = viewModel()) {
                             Icon(Icons.Default.Search, contentDescription = "Global Search", tint = MaterialTheme.colorScheme.onSurface)
                         }
 
-                        // Dark Mode Toggle Button
                         IconButton(
                             onClick = { viewModel.toggleDarkMode() },
                             modifier = Modifier.testTag("top_nav_dark_mode")
@@ -117,7 +120,6 @@ fun CoachMasterApp(viewModel: CoachMasterViewModel = viewModel()) {
                             )
                         }
 
-                        // Quick Batches icon
                         IconButton(
                             onClick = { viewModel.selectTab(AppNavDestination.BATCHES) },
                             modifier = Modifier.testTag("top_nav_batches")
@@ -125,7 +127,6 @@ fun CoachMasterApp(viewModel: CoachMasterViewModel = viewModel()) {
                             Icon(Icons.Default.Class, contentDescription = "Batches", tint = MaterialTheme.colorScheme.onSurface)
                         }
 
-                        // Quick Exams icon
                         IconButton(
                             onClick = { viewModel.selectTab(AppNavDestination.EXAMS) },
                             modifier = Modifier.testTag("top_nav_exams")
@@ -133,7 +134,6 @@ fun CoachMasterApp(viewModel: CoachMasterViewModel = viewModel()) {
                             Icon(Icons.Default.Assignment, contentDescription = "Exams", tint = MaterialTheme.colorScheme.onSurface)
                         }
 
-                        // Quick Expenses icon
                         IconButton(
                             onClick = { viewModel.selectTab(AppNavDestination.EXPENSES) },
                             modifier = Modifier.testTag("top_nav_expenses")
@@ -141,7 +141,6 @@ fun CoachMasterApp(viewModel: CoachMasterViewModel = viewModel()) {
                             Icon(Icons.Default.ReceiptLong, contentDescription = "Expenses", tint = MaterialTheme.colorScheme.onSurface)
                         }
 
-                        // More menu (Staff, Timetable, Reports, Settings, Logout)
                         Box {
                             IconButton(
                                 onClick = { showMoreMenu = true },
@@ -210,8 +209,6 @@ fun CoachMasterApp(viewModel: CoachMasterViewModel = viewModel()) {
                     tonalElevation = 6.dp,
                     windowInsets = NavigationBarDefaults.windowInsets
                 ) {
-                    // Matches the 5 mobile bottom nav items in v10studendrecord.html:
-                    // Dashboard, Students, Batches, Attendance, Fees (plus Analytics accessible via top/more)
                     val primaryTabs = listOf(
                         Triple(AppNavDestination.DASHBOARD, Icons.Default.Dashboard, "Dashboard"),
                         Triple(AppNavDestination.STUDENTS, Icons.Default.People, "Students"),
@@ -244,11 +241,36 @@ fun CoachMasterApp(viewModel: CoachMasterViewModel = viewModel()) {
                     .padding(innerPadding)
             ) {
                 when (uiState.currentTab) {
-                    AppNavDestination.DASHBOARD -> DashboardScreen(viewModel = viewModel)
-                    AppNavDestination.STUDENTS -> StudentsScreen(viewModel = viewModel)
+                    AppNavDestination.DASHBOARD -> DashboardScreen(
+                        dashboardViewModel = dashboardViewModel,
+                        isAdmin = uiState.isAdmin,
+                        onSelectTab = { viewModel.selectTab(it) },
+                        onNavigateToAttendanceForDate = { date ->
+                            attendanceViewModel.setSelectedDate(date)
+                            viewModel.navigateToAttendanceForDate(date)
+                        },
+                        onSelectStudentForPayment = { student ->
+                            financeViewModel.selectStudentForPayment(student)
+                            viewModel.selectStudentForPayment(student)
+                        }
+                    )
+                    AppNavDestination.STUDENTS -> StudentsScreen(
+                        studentViewModel = studentViewModel,
+                        isAdmin = uiState.isAdmin,
+                        onSelectStudentForPayment = { student ->
+                            financeViewModel.selectStudentForPayment(student)
+                            viewModel.selectStudentForPayment(student)
+                        }
+                    )
                     AppNavDestination.BATCHES -> BatchesScreen(viewModel = viewModel)
-                    AppNavDestination.ATTENDANCE -> AttendanceScreen(viewModel = viewModel)
-                    AppNavDestination.FINANCE -> FinanceScreen(viewModel = viewModel)
+                    AppNavDestination.ATTENDANCE -> AttendanceScreen(
+                        attendanceViewModel = attendanceViewModel,
+                        isAdmin = uiState.isAdmin
+                    )
+                    AppNavDestination.FINANCE -> FinanceScreen(
+                        financeViewModel = financeViewModel,
+                        isAdmin = uiState.isAdmin
+                    )
                     AppNavDestination.EXAMS -> ExamsScreen(viewModel = viewModel)
                     AppNavDestination.EXPENSES -> ExpensesScreen(viewModel = viewModel)
                     AppNavDestination.STAFF -> StaffScreen(viewModel = viewModel)
@@ -267,6 +289,7 @@ fun CoachMasterApp(viewModel: CoachMasterViewModel = viewModel()) {
                 onDismiss = { viewModel.closeGlobalSearch() },
                 onSelectStudent = { student ->
                     viewModel.closeGlobalSearch()
+                    financeViewModel.selectStudentForPayment(student)
                     viewModel.selectStudentForPayment(student)
                 },
                 onSelectBatchesTab = {

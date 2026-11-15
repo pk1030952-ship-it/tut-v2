@@ -198,5 +198,64 @@ class FeeCalculatorTest {
         assertEquals(0.0, dueInfo.pendingBalance, 0.01)
         assertEquals(false, dueInfo.isOverdue)
     }
+
+    @Test
+    fun testSecurityUtilsHashingAndVerification() {
+        val rawPin = "4590"
+        val hashedPin = com.example.util.SecurityUtils.hashSecret(rawPin)
+        assertTrue(com.example.util.SecurityUtils.isHashed(hashedPin))
+        assertTrue(com.example.util.SecurityUtils.verifySecret(rawPin, hashedPin))
+        assertEquals(false, com.example.util.SecurityUtils.verifySecret("0000", hashedPin))
+        assertEquals(false, com.example.util.SecurityUtils.verifySecret("P@88337", hashedPin))
+    }
+
+    @Test
+    fun testStudentFormInputValidation() {
+        // Blank roll number check
+        val blankRoll = com.example.util.SecurityUtils.validateStudentInput(
+            rollNo = "   ",
+            name = "Rahul Kumar",
+            phone = "9876543210",
+            monthlyFeeStr = "1500"
+        )
+        assertTrue(blankRoll != null)
+
+        // Blank name check
+        val blankName = com.example.util.SecurityUtils.validateStudentInput(
+            rollNo = "101",
+            name = "",
+            phone = "9876543210",
+            monthlyFeeStr = "1500"
+        )
+        assertTrue(blankName != null)
+
+        // Invalid phone (not 10 digits)
+        val shortPhone = com.example.util.SecurityUtils.validateStudentInput(
+            rollNo = "101",
+            name = "Rahul Kumar",
+            phone = "98765",
+            monthlyFeeStr = "1500"
+        )
+        assertTrue(shortPhone != null)
+
+        // Invalid monthly fee (0 or negative)
+        val zeroFee = com.example.util.SecurityUtils.validateStudentInput(
+            rollNo = "101",
+            name = "Rahul Kumar",
+            phone = "9876543210",
+            monthlyFeeStr = "0"
+        )
+        assertTrue(zeroFee != null)
+
+        // Valid input
+        val valid = com.example.util.SecurityUtils.validateStudentInput(
+            rollNo = "101",
+            name = "Rahul Kumar",
+            phone = "9876543210",
+            monthlyFeeStr = "1500"
+        )
+        assertEquals(null, valid)
+    }
 }
+
 

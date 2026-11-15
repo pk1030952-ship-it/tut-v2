@@ -5,14 +5,19 @@ import androidx.room.withTransaction
 import com.example.data.database.AppDatabase
 import com.example.data.model.*
 import com.example.util.FeeCalculator
+import com.example.util.SecurityUtils
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
+import com.google.firebase.firestore.DocumentReference
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.ListenerRegistration
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
@@ -29,6 +34,41 @@ class CoachMasterRepository(
     private val database: AppDatabase,
     private val appContext: Context? = null
 ) {
+
+    companion object {
+        const val COLLECTION_STUDENTS = "students"
+        const val COLLECTION_ATTENDANCE = "attendance"
+        const val COLLECTION_PAYMENTS = "payments"
+        const val COLLECTION_BATCHES = "batches"
+        const val COLLECTION_STAFF = "staff"
+        const val COLLECTION_EXPENSES = "expenses"
+        const val COLLECTION_EXAMS = "exams"
+        const val COLLECTION_EXAM_RESULTS = "examResults"
+        const val COLLECTION_COMMUNICATIONS = "communications"
+        const val COLLECTION_SETTINGS = "settings"
+        const val DOC_INSTITUTE_CONFIG = "instituteConfig"
+
+        // Legacy single-document path (used only for one-time automatic migration if collections are empty)
+        private const val LEGACY_COLLECTION = "tuitionAppDb"
+        private const val LEGACY_DOC = "mainData"
+
+        // Max operations per Firestore WriteBatch (limit is 500; 400 keeps safe margin for lakhs of records)
+        private const val BATCH_CHUNK_SIZE = 400
+
+        @Volatile
+        private var INSTANCE: CoachMasterRepository? = null
+
+        fun getInstance(context: Context): CoachMasterRepository {
+            return INSTANCE ?: synchronized(this) {
+                val instance = CoachMasterRepository(
+                    database = AppDatabase.getInstance(context.applicationContext),
+                    appContext = context.applicationContext
+                )
+                INSTANCE = instance
+                instance
+            }
+        }
+    }
 
     private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -54,9 +94,47 @@ class CoachMasterRepository(
     val allCommunications: Flow<List<CommunicationLog>> = commDao.getAllLogs()
     val config: Flow<InstituteConfig?> = configDao.getConfig()
 
+    private val _isSyncing = MutableStateFlow(false)
+    val isSyncing: StateFlow<Boolean> = _isSyncing.asStateFlow()
+
+    private val _isCloudConnected = MutableStateFlow(true)
+    val isCloudConnected: StateFlow<Boolean> = _isCloudConnected.asStateFlow()
+
+    private val _statusMessage = MutableStateFlow<String?>(null)
+    val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
+
     @Volatile
     private var isApplyingRemoteUpdate = false
-    private var snapshotListener: ListenerRegistration? = null
+
+    @Volatile
+    private var isInitialized = false
+    private val snapshotListeners = mutableListOf<ListenerRegistration>()
+
+    fun postStatusMessage(msg: String?) {
+        _statusMessage.value = msg
+    }
+
+    fun clearStatusMessage() {
+        _statusMessage.value = null
+    }
+
+    fun ensureInitialized() {
+        if (isInitialized) return
+        synchronized(this) {
+            if (isInitialized) return
+            isInitialized = true
+            repoScope.launch {
+                _isSyncing.value = true
+                val result = pullFromCloud()
+                _isSyncing.value = false
+                _isCloudConnected.value = result.isSuccess
+                startRealtimeCloudSync { connected, msg ->
+                    _isCloudConnected.value = connected
+                    if (msg != null) _statusMessage.value = msg
+                }
+            }
+        }
+    }
 
     private fun getIsoNow(): String {
         val sdf = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
@@ -79,10 +157,6 @@ class CoachMasterRepository(
         }
     }
 
-    /**
-     * Ensures FirebaseApp is initialized with the exact project credentials from v10studendrecord.html
-     * (projectId: tution-pro-32a33, collection: tuitionAppDb, doc: mainData).
-     */
     private fun getFirestoreSafely(): FirebaseFirestore? {
         return try {
             val existingApps = FirebaseApp.getApps(appContext ?: return FirebaseFirestore.getInstance())
@@ -107,29 +181,98 @@ class CoachMasterRepository(
     }
 
     /**
-     * Starts real-time Firestore listener on `tuitionAppDb/mainData` so changes made in
-     * v10studendrecord.html or on another device appear automatically in the app.
+     * Starts real-time Firestore collection listeners on:
+     * - `students/{studentId}`
+     * - `attendance/{date}`
+     * - `payments/{paymentId}`
+     * Eliminates the 1MB single-document limit while keeping multi-device real-time sync active.
      */
     fun startRealtimeCloudSync(onStatusChange: (Boolean, String?) -> Unit = { _, _ -> }) {
         val firestore = getFirestoreSafely() ?: return
-        if (snapshotListener != null) return
+        if (snapshotListeners.isNotEmpty()) return
 
-        val docRef = firestore.collection("tuitionAppDb").document("mainData")
-        snapshotListener = docRef.addSnapshotListener { snapshot, error ->
-            if (error != null) {
-                onStatusChange(false, null)
-                return@addSnapshotListener
-            }
-            if (snapshot != null && snapshot.exists() && !isApplyingRemoteUpdate) {
-                val data = snapshot.data
-                if (data != null) {
+        // 1. Real-time listener on `students/{studentId}`
+        val studentsListener = firestore.collection(COLLECTION_STUDENTS)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    onStatusChange(false, null)
+                    return@addSnapshotListener
+                }
+                if (snapshot != null && !snapshot.isEmpty && !isApplyingRemoteUpdate) {
                     repoScope.launch {
-                        applyCloudMapToLocalDb(data)
-                        onStatusChange(true, null)
+                        isApplyingRemoteUpdate = true
+                        try {
+                            val parsed = snapshot.documents.mapNotNull { doc ->
+                                parseStudentMap(doc.id, doc.data ?: emptyMap())
+                            }
+                            if (parsed.isNotEmpty()) {
+                                studentDao.insertStudents(parsed)
+                            }
+                            onStatusChange(true, null)
+                        } finally {
+                            isApplyingRemoteUpdate = false
+                        }
                     }
                 }
             }
-        }
+
+        // 2. Real-time listener on `attendance/{date}`
+        val attendanceListener = firestore.collection(COLLECTION_ATTENDANCE)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    onStatusChange(false, null)
+                    return@addSnapshotListener
+                }
+                if (snapshot != null && !snapshot.isEmpty && !isApplyingRemoteUpdate) {
+                    repoScope.launch {
+                        isApplyingRemoteUpdate = true
+                        try {
+                            val studentBatchMap = studentDao.getAllStudents().first().associate { it.id to it.batchId }
+                            val records = mutableListOf<AttendanceRecord>()
+                            snapshot.documents.forEach { doc ->
+                                val dateStr = doc.id
+                                val data = doc.data ?: emptyMap()
+                                records.addAll(parseAttendanceDateDoc(dateStr, data, studentBatchMap))
+                            }
+                            if (records.isNotEmpty()) {
+                                attendanceDao.insertAttendanceList(records)
+                            }
+                            onStatusChange(true, null)
+                        } finally {
+                            isApplyingRemoteUpdate = false
+                        }
+                    }
+                }
+            }
+
+        // 3. Real-time listener on `payments/{paymentId}`
+        val paymentsListener = firestore.collection(COLLECTION_PAYMENTS)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    onStatusChange(false, null)
+                    return@addSnapshotListener
+                }
+                if (snapshot != null && !snapshot.isEmpty && !isApplyingRemoteUpdate) {
+                    repoScope.launch {
+                        isApplyingRemoteUpdate = true
+                        try {
+                            val parsed = snapshot.documents.mapNotNull { doc ->
+                                parsePaymentMap(doc.id, doc.data ?: emptyMap())
+                            }
+                            if (parsed.isNotEmpty()) {
+                                paymentDao.insertPayments(parsed)
+                            }
+                            onStatusChange(true, null)
+                        } finally {
+                            isApplyingRemoteUpdate = false
+                        }
+                    }
+                }
+            }
+
+        snapshotListeners.add(studentsListener)
+        snapshotListeners.add(attendanceListener)
+        snapshotListeners.add(paymentsListener)
     }
 
     fun getAttendanceForDate(date: String): Flow<List<AttendanceRecord>> =
@@ -147,142 +290,420 @@ class CoachMasterRepository(
     fun getCommunicationLogs(studentId: String): Flow<List<CommunicationLog>> =
         commDao.getLogsForStudent(studentId)
 
-    // Student CRUD
+    private fun studentToFirestoreMap(s: Student): Map<String, Any?> = mapOf(
+        "id" to s.id,
+        "roll" to s.rollNo,
+        "rollNo" to s.rollNo,
+        "name" to s.name,
+        "phone" to s.phone,
+        "parentPhone" to s.parentPhone,
+        "batchId" to s.batchId,
+        "monthlyFee" to s.monthlyFee,
+        "joiningDate" to s.joiningDate,
+        "status" to s.status,
+        "notes" to s.notes,
+        "updatedAt" to getIsoNow()
+    )
+
+    private fun paymentToFirestoreMap(p: PaymentRecord): Map<String, Any?> {
+        val iso = p.isoTimestamp.ifBlank { getIsoNow() }
+        return mapOf(
+            "id" to p.id,
+            "transactionId" to p.id,
+            "studentId" to p.studentId,
+            "amount" to p.amount,
+            "amountPaid" to p.amount,
+            "discount" to p.discount,
+            "paymentDate" to p.paymentDate,
+            "mode" to p.paymentMode,
+            "paymentMode" to p.paymentMode,
+            "remarks" to p.remarks,
+            "timestamp" to iso,
+            "timestampMillis" to p.timestamp
+        )
+    }
+
+    private fun batchToFirestoreMap(b: Batch): Map<String, Any?> = mapOf(
+        "id" to b.id,
+        "name" to b.name,
+        "subject" to b.subject,
+        "schedule" to b.schedule,
+        "timing" to b.timing,
+        "teacherId" to b.teacherId,
+        "teacherName" to b.teacherName,
+        "classesPerCycle" to b.classesPerCycle
+    )
+
+    private fun staffToFirestoreMap(st: Staff): Map<String, Any?> = mapOf(
+        "id" to st.id,
+        "name" to st.name,
+        "role" to st.role,
+        "subject" to st.subject,
+        "phone" to st.phone,
+        "salary" to st.salary
+    )
+
+    private fun expenseToFirestoreMap(e: ExpenseRecord): Map<String, Any?> = mapOf(
+        "id" to e.id,
+        "date" to e.date,
+        "category" to e.category,
+        "description" to e.description,
+        "amount" to e.amount
+    )
+
+    private fun examToFirestoreMap(ex: Exam): Map<String, Any?> = mapOf(
+        "id" to ex.id,
+        "name" to ex.name,
+        "batchId" to ex.batchId,
+        "date" to ex.date,
+        "totalMarks" to ex.totalMarks
+    )
+
+    private fun examResultToFirestoreMap(r: ExamResult): Map<String, Any?> = mapOf(
+        "id" to r.id,
+        "examId" to r.examId,
+        "studentId" to r.studentId,
+        "marksObtained" to r.marksObtained
+    )
+
+    private fun commToFirestoreMap(c: CommunicationLog): Map<String, Any?> = mapOf(
+        "id" to c.id,
+        "studentId" to c.studentId,
+        "date" to c.date,
+        "note" to c.note,
+        "timestamp" to c.isoTimestamp.ifBlank { getIsoNow() }
+    )
+
+    // Student CRUD -> `students/{studentId}`
     suspend fun saveStudent(student: Student) = withContext(Dispatchers.IO) {
         studentDao.insertStudent(student)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_STUDENTS)
+                .document(student.id)
+                .set(studentToFirestoreMap(student))
+                .await()
+        }
     }
 
     suspend fun deleteStudent(studentId: String) = withContext(Dispatchers.IO) {
+        val studentPayments = paymentDao.getPaymentsForStudent(studentId).first()
+        val studentComms = commDao.getLogsForStudent(studentId).first()
+        val studentAttDates = attendanceDao.getAttendanceForStudent(studentId).first().map { it.date }.distinct()
+
         studentDao.deleteStudentById(studentId)
         attendanceDao.deleteForStudent(studentId)
         paymentDao.deleteForStudent(studentId)
         commDao.deleteForStudent(studentId)
         examDao.deleteResultsForStudent(studentId)
-        pushToCloud()
+
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_STUDENTS).document(studentId).delete().await()
+            studentPayments.forEach { p ->
+                firestore.collection(COLLECTION_PAYMENTS).document(p.id).delete().await()
+            }
+            studentComms.forEach { c ->
+                firestore.collection(COLLECTION_COMMUNICATIONS).document(c.id).delete().await()
+            }
+            studentAttDates.forEach { dateStr ->
+                syncAttendanceDateDocument(firestore, dateStr)
+            }
+        }
     }
 
     suspend fun toggleStudentStatus(student: Student) = withContext(Dispatchers.IO) {
         val newStatus = if (student.status == "active") "inactive" else "active"
-        studentDao.updateStudent(student.copy(status = newStatus))
-        pushToCloud()
+        val updated = student.copy(status = newStatus)
+        studentDao.updateStudent(updated)
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_STUDENTS)
+                .document(updated.id)
+                .set(studentToFirestoreMap(updated))
+                .await()
+        }
     }
 
-    // Batch CRUD
+    // Batch CRUD -> `batches/{batchId}`
     suspend fun saveBatch(batch: Batch) = withContext(Dispatchers.IO) {
         batchDao.insertBatch(batch)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_BATCHES)
+                .document(batch.id)
+                .set(batchToFirestoreMap(batch))
+                .await()
+        }
     }
 
     suspend fun deleteBatch(batch: Batch) = withContext(Dispatchers.IO) {
         batchDao.deleteBatch(batch)
-        // Unassign students in this batch (matching v10studendrecord.html behavior)
         val enrolled = studentDao.getAllStudents().first().filter { it.batchId == batch.id }
         enrolled.forEach { s ->
-            studentDao.updateStudent(s.copy(batchId = null))
+            val updated = s.copy(batchId = null)
+            studentDao.updateStudent(updated)
         }
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_BATCHES).document(batch.id).delete().await()
+            enrolled.forEach { s ->
+                firestore.collection(COLLECTION_STUDENTS)
+                    .document(s.id)
+                    .set(studentToFirestoreMap(s.copy(batchId = null)))
+                    .await()
+            }
+        }
     }
 
-    // Staff CRUD
+    // Staff CRUD -> `staff/{staffId}`
     suspend fun saveStaff(staff: Staff) = withContext(Dispatchers.IO) {
         staffDao.insertStaff(staff)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_STAFF)
+                .document(staff.id)
+                .set(staffToFirestoreMap(staff))
+                .await()
+        }
     }
 
     suspend fun deleteStaff(staff: Staff) = withContext(Dispatchers.IO) {
         staffDao.deleteStaff(staff)
-        // Unassign teacher from batches (matching v10studendrecord.html behavior)
         val assignedBatches = batchDao.getAllBatches().first().filter { it.teacherId == staff.id }
         assignedBatches.forEach { b ->
             batchDao.insertBatch(b.copy(teacherId = null, teacherName = ""))
         }
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_STAFF).document(staff.id).delete().await()
+            assignedBatches.forEach { b ->
+                firestore.collection(COLLECTION_BATCHES)
+                    .document(b.id)
+                    .set(batchToFirestoreMap(b.copy(teacherId = null, teacherName = "")))
+                    .await()
+            }
+        }
     }
 
-    // Attendance
+    // Attendance -> `attendance/{date}`
     suspend fun recordAttendanceBatch(date: String, records: List<AttendanceRecord>) = withContext(Dispatchers.IO) {
         attendanceDao.insertAttendanceList(records)
-        pushToCloud()
+        val affectedDates = (records.map { it.date } + date).distinct()
+        syncDocumentSafely { firestore ->
+            affectedDates.forEach { dateStr ->
+                syncAttendanceDateDocument(firestore, dateStr)
+            }
+        }
     }
 
-    // Payment
+    private suspend fun syncAttendanceDateDocument(firestore: FirebaseFirestore, dateStr: String) {
+        val dayRecords = attendanceDao.getAttendanceForDate(dateStr).first()
+        val docRef = firestore.collection(COLLECTION_ATTENDANCE).document(dateStr)
+        if (dayRecords.isEmpty()) {
+            docRef.delete().await()
+        } else {
+            val mappedRecords = dayRecords.map { r ->
+                mapOf(
+                    "studentId" to r.studentId,
+                    "batchId" to r.batchId,
+                    "status" to r.status,
+                    "reason" to r.reason
+                )
+            }
+            docRef.set(
+                mapOf(
+                    "date" to dateStr,
+                    "records" to mappedRecords,
+                    "updatedAt" to getIsoNow()
+                )
+            ).await()
+        }
+    }
+
+    // Payment -> `payments/{paymentId}`
     suspend fun recordPayment(payment: PaymentRecord) = withContext(Dispatchers.IO) {
         val withIso = if (payment.isoTimestamp.isBlank()) {
             payment.copy(isoTimestamp = getIsoNow())
         } else payment
         paymentDao.insertPayment(withIso)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_PAYMENTS)
+                .document(withIso.id)
+                .set(paymentToFirestoreMap(withIso))
+                .await()
+        }
     }
 
     suspend fun deletePayment(payment: PaymentRecord) = withContext(Dispatchers.IO) {
         paymentDao.deletePayment(payment)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_PAYMENTS)
+                .document(payment.id)
+                .delete()
+                .await()
+        }
     }
 
-    // Expense
+    // Expense -> `expenses/{expenseId}`
     suspend fun recordExpense(expense: ExpenseRecord) = withContext(Dispatchers.IO) {
         expenseDao.insertExpense(expense)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_EXPENSES)
+                .document(expense.id)
+                .set(expenseToFirestoreMap(expense))
+                .await()
+        }
     }
 
     suspend fun deleteExpense(expense: ExpenseRecord) = withContext(Dispatchers.IO) {
         expenseDao.deleteExpense(expense)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_EXPENSES)
+                .document(expense.id)
+                .delete()
+                .await()
+        }
     }
 
-    // Exam & Results
+    // Exam & Results -> `exams/{examId}` and `examResults/{resultId}`
     suspend fun saveExam(exam: Exam) = withContext(Dispatchers.IO) {
         examDao.insertExam(exam)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_EXAMS)
+                .document(exam.id)
+                .set(examToFirestoreMap(exam))
+                .await()
+        }
     }
 
     suspend fun deleteExam(exam: Exam) = withContext(Dispatchers.IO) {
+        val existingResults = examDao.getResultsForExam(exam.id).first()
         examDao.deleteResultsForExam(exam.id)
         examDao.deleteExam(exam)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_EXAMS).document(exam.id).delete().await()
+            existingResults.forEach { r ->
+                firestore.collection(COLLECTION_EXAM_RESULTS).document(r.id).delete().await()
+            }
+        }
     }
 
     suspend fun saveExamResults(examId: String, results: List<ExamResult>) = withContext(Dispatchers.IO) {
+        val oldResults = examDao.getResultsForExam(examId).first()
         examDao.deleteResultsForExam(examId)
         examDao.insertResults(results)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            oldResults.forEach { old ->
+                firestore.collection(COLLECTION_EXAM_RESULTS).document(old.id).delete().await()
+            }
+            results.forEach { r ->
+                firestore.collection(COLLECTION_EXAM_RESULTS)
+                    .document(r.id)
+                    .set(examResultToFirestoreMap(r))
+                    .await()
+            }
+        }
     }
 
-    // Communication Log
+    // Communication Log -> `communications/{logId}`
     suspend fun addCommunicationLog(log: CommunicationLog) = withContext(Dispatchers.IO) {
         val withIso = if (log.isoTimestamp.isBlank()) {
             log.copy(isoTimestamp = getIsoNow())
         } else log
         commDao.insertLog(withIso)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_COMMUNICATIONS)
+                .document(withIso.id)
+                .set(commToFirestoreMap(withIso))
+                .await()
+        }
     }
 
     suspend fun deleteCommunicationLog(log: CommunicationLog) = withContext(Dispatchers.IO) {
         commDao.deleteLog(log)
-        pushToCloud()
+        syncDocumentSafely { firestore ->
+            firestore.collection(COLLECTION_COMMUNICATIONS)
+                .document(log.id)
+                .delete()
+                .await()
+        }
     }
 
-    // Config
+    // Config -> `settings/instituteConfig` (Always stores hashed PIN & Password in Room)
     suspend fun saveConfig(config: InstituteConfig) = withContext(Dispatchers.IO) {
-        configDao.saveConfig(config)
-        pushToCloud()
+        val securedConfig = config.copy(
+            adminPin = SecurityUtils.hashSecret(config.adminPin),
+            adminPassword = SecurityUtils.hashSecret(config.adminPassword)
+        )
+        configDao.saveConfig(securedConfig)
+        syncDocumentSafely { firestore ->
+            val settingsMap = mapOf(
+                "darkMode" to securedConfig.darkMode,
+                "instituteName" to securedConfig.instituteName,
+                "address" to securedConfig.address,
+                "contactPhone" to securedConfig.contactPhone,
+                "defaultClassesPerCycle" to securedConfig.defaultClassesPerCycle,
+                "updatedAt" to getIsoNow()
+            )
+            firestore.collection(COLLECTION_SETTINGS)
+                .document(DOC_INSTITUTE_CONFIG)
+                .set(settingsMap)
+                .await()
+        }
     }
 
-    // Factory Reset (clears both local Room DB and Firebase tuitionAppDb/mainData)
+    private suspend fun syncDocumentSafely(block: suspend (FirebaseFirestore) -> Unit) {
+        val firestore = getFirestoreSafely() ?: return
+        isApplyingRemoteUpdate = true
+        try {
+            block(firestore)
+            _isCloudConnected.value = true
+        } catch (e: Exception) {
+            _isCloudConnected.value = false
+        } finally {
+            isApplyingRemoteUpdate = false
+        }
+    }
+
+    // Factory Reset (clears both local Room DB and Firestore Collections)
     suspend fun factoryReset() = withContext(Dispatchers.IO) {
         val currentConfig = configDao.getConfigSync() ?: InstituteConfig()
         database.clearAllTables()
         val resetConfig = currentConfig.copy(
             id = 1,
             instituteName = currentConfig.instituteName.ifBlank { "CoachMaster" },
-            address = currentConfig.address
+            address = currentConfig.address,
+            adminPin = SecurityUtils.hashSecret(currentConfig.adminPin),
+            adminPassword = SecurityUtils.hashSecret(currentConfig.adminPassword)
         )
         configDao.saveConfig(resetConfig)
+        clearAllCloudCollections()
         pushToCloud()
     }
 
-    // Demo Data Seeder (matches v10studendrecord.html loadDemoData)
+    private suspend fun clearAllCloudCollections() {
+        val firestore = getFirestoreSafely() ?: return
+        val collections = listOf(
+            COLLECTION_STUDENTS,
+            COLLECTION_ATTENDANCE,
+            COLLECTION_PAYMENTS,
+            COLLECTION_BATCHES,
+            COLLECTION_STAFF,
+            COLLECTION_EXPENSES,
+            COLLECTION_EXAMS,
+            COLLECTION_EXAM_RESULTS,
+            COLLECTION_COMMUNICATIONS
+        )
+        try {
+            val refsToDelete = mutableListOf<DocumentReference>()
+            for (col in collections) {
+                val snap = firestore.collection(col).get().await()
+                refsToDelete.addAll(snap.documents.map { it.reference })
+            }
+            refsToDelete.chunked(BATCH_CHUNK_SIZE).forEach { chunk ->
+                val batch = firestore.batch()
+                chunk.forEach { ref -> batch.delete(ref) }
+                batch.commit().await()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    // Demo Data Seeder
     suspend fun seedDemoData() = withContext(Dispatchers.IO) {
         val batchId = UUID.randomUUID().toString()
         val batch = Batch(
@@ -342,8 +763,6 @@ class CoachMasterRepository(
         )
         expenseDao.insertExpense(expense)
 
-        // Seed 35 days of demo attendance for Rahul (32 working days + 3 holidays -> 1 completed cycle + 2/30 progress)
-        // and 24 working days + 2 holidays for Priya (24/30 progress -> 6 classes left)
         val demoAttendance = mutableListOf<AttendanceRecord>()
         val cal = java.util.Calendar.getInstance()
         val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
@@ -396,21 +815,120 @@ class CoachMasterRepository(
     }
 
     /**
-     * Pulls full data from Firebase `tuitionAppDb/mainData` into Room database.
+     * Pulls data from Firestore Collections:
+     * - `students/{studentId}`
+     * - `attendance/{date}`
+     * - `payments/{paymentId}`
+     * - plus `batches`, `staff`, `expenses`, `exams`, `examResults`, `communications`, `settings`.
+     * If the collections are empty on first upgrade, automatically checks legacy `tuitionAppDb/mainData`
+     * and migrates it into the new collection structure.
      */
     suspend fun pullFromCloud(): Result<String> = withContext(Dispatchers.IO) {
         try {
             val firestore = getFirestoreSafely()
                 ?: return@withContext Result.failure(IllegalStateException("Firebase not available"))
-            val snap = firestore.collection("tuitionAppDb").document("mainData").get().await()
-            if (snap.exists() && snap.data != null) {
-                applyCloudMapToLocalDb(snap.data!!)
+
+            val studentsSnap = firestore.collection(COLLECTION_STUDENTS).get().await()
+            val attendanceSnap = firestore.collection(COLLECTION_ATTENDANCE).get().await()
+            val paymentsSnap = firestore.collection(COLLECTION_PAYMENTS).get().await()
+            val batchesSnap = firestore.collection(COLLECTION_BATCHES).get().await()
+            val staffSnap = firestore.collection(COLLECTION_STAFF).get().await()
+            val expensesSnap = firestore.collection(COLLECTION_EXPENSES).get().await()
+            val examsSnap = firestore.collection(COLLECTION_EXAMS).get().await()
+            val examResultsSnap = firestore.collection(COLLECTION_EXAM_RESULTS).get().await()
+            val commsSnap = firestore.collection(COLLECTION_COMMUNICATIONS).get().await()
+            val settingsSnap = firestore.collection(COLLECTION_SETTINGS).document(DOC_INSTITUTE_CONFIG).get().await()
+
+            val hasCollectionData = !studentsSnap.isEmpty || !attendanceSnap.isEmpty || !paymentsSnap.isEmpty || !batchesSnap.isEmpty
+
+            if (hasCollectionData) {
+                isApplyingRemoteUpdate = true
+                try {
+                    val parsedStaff = staffSnap.documents.mapNotNull { doc ->
+                        parseStaffMap(doc.id, doc.data ?: emptyMap())
+                    }
+                    val staffById = parsedStaff.associateBy { it.id }
+
+                    val parsedBatches = batchesSnap.documents.mapNotNull { doc ->
+                        parseBatchMap(doc.id, doc.data ?: emptyMap(), staffById)
+                    }
+
+                    val parsedStudents = studentsSnap.documents.mapNotNull { doc ->
+                        parseStudentMap(doc.id, doc.data ?: emptyMap())
+                    }
+                    val studentBatchMap = parsedStudents.associate { it.id to it.batchId }
+
+                    val parsedAttendance = mutableListOf<AttendanceRecord>()
+                    attendanceSnap.documents.forEach { doc ->
+                        parsedAttendance.addAll(
+                            parseAttendanceDateDoc(doc.id, doc.data ?: emptyMap(), studentBatchMap)
+                        )
+                    }
+
+                    val parsedPayments = paymentsSnap.documents.mapNotNull { doc ->
+                        parsePaymentMap(doc.id, doc.data ?: emptyMap())
+                    }
+
+                    val parsedExpenses = expensesSnap.documents.mapNotNull { doc ->
+                        parseExpenseMap(doc.id, doc.data ?: emptyMap())
+                    }
+
+                    val parsedExams = examsSnap.documents.mapNotNull { doc ->
+                        parseExamMap(doc.id, doc.data ?: emptyMap())
+                    }
+
+                    val parsedResults = examResultsSnap.documents.mapNotNull { doc ->
+                        parseExamResultMap(doc.data ?: emptyMap())
+                    }
+
+                    val parsedComms = commsSnap.documents.mapNotNull { doc ->
+                        parseCommMap(doc.id, doc.data ?: emptyMap())
+                    }
+
+                    val existingConfig = configDao.getConfigSync() ?: InstituteConfig()
+                    val updatedConfig = if (settingsSnap.exists() && settingsSnap.data != null) {
+                        parseSettingsMap(settingsSnap.data!!, existingConfig)
+                    } else existingConfig
+
+                    database.withTransaction {
+                        studentDao.deleteAll()
+                        batchDao.deleteAll()
+                        staffDao.deleteAll()
+                        attendanceDao.deleteAll()
+                        paymentDao.deleteAll()
+                        commDao.deleteAll()
+                        examDao.deleteAllExamResults()
+                        examDao.deleteAllExams()
+                        expenseDao.deleteAll()
+
+                        staffDao.insertStaffList(parsedStaff)
+                        batchDao.insertBatches(parsedBatches)
+                        studentDao.insertStudents(parsedStudents)
+                        attendanceDao.insertAttendanceList(parsedAttendance)
+                        paymentDao.insertPayments(parsedPayments)
+                        commDao.insertLogs(parsedComms)
+                        examDao.insertExams(parsedExams)
+                        examDao.insertResults(parsedResults)
+                        expenseDao.insertExpenses(parsedExpenses)
+                        configDao.saveConfig(updatedConfig)
+                    }
+                } finally {
+                    isApplyingRemoteUpdate = false
+                }
                 val count = studentDao.getAllStudents().first().size
-                Result.success("Synced from Firebase Cloud ($count students loaded)")
+                Result.success("Synced from Firestore Collections ($count students loaded)")
             } else {
-                // Document doesn't exist yet on cloud; push current local state
-                pushToCloud()
-                Result.success("Initialized Firebase Cloud database")
+                // Check if legacy single document exists for one-time automatic migration to Collections
+                val legacySnap = firestore.collection(LEGACY_COLLECTION).document(LEGACY_DOC).get().await()
+                if (legacySnap.exists() && legacySnap.data != null) {
+                    applyCloudMapToLocalDb(legacySnap.data!!)
+                    pushToCloud()
+                    val count = studentDao.getAllStudents().first().size
+                    Result.success("Migrated $count students to Firestore Collections architecture")
+                } else {
+                    pushToCloud()
+                    Result.success("Initialized Firestore Collections database")
+                }
             }
         } catch (e: Exception) {
             Result.failure(e)
@@ -418,7 +936,13 @@ class CoachMasterRepository(
     }
 
     /**
-     * Pushes full local state to Firebase `tuitionAppDb/mainData` in the exact format of v10studendrecord.html.
+     * Pushes all local Room entities to Firestore Collections:
+     * - `students/{studentId}`
+     * - `attendance/{date}`
+     * - `payments/{paymentId}`
+     * - plus `batches/{batchId}`, `staff/{staffId}`, `expenses/{expenseId}`, `exams/{examId}`,
+     *   `examResults/{resultId}`, `communications/{logId}`, and `settings/instituteConfig`.
+     * Uses chunked WriteBatch commits (400 ops per batch) to scale to lakhs of records without hitting 1MB or 500-op limits.
      */
     suspend fun pushToCloud(): Result<String> = withContext(Dispatchers.IO) {
         try {
@@ -426,15 +950,109 @@ class CoachMasterRepository(
                 ?: return@withContext Result.failure(IllegalStateException("Firebase not available"))
             isApplyingRemoteUpdate = true
 
-            val payload = buildCloudPayloadMap()
-            firestore.collection("tuitionAppDb")
-                .document("mainData")
-                .set(payload)
-                .await()
+            val students = studentDao.getAllStudents().first()
+            val batches = batchDao.getAllBatches().first()
+            val staffList = staffDao.getAllStaff().first()
+            val attendanceList = attendanceDao.getAllAttendance().first()
+            val payments = paymentDao.getAllPayments().first()
+            val expenses = expenseDao.getAllExpenses().first()
+            val exams = examDao.getAllExams().first()
+            val examResults = examDao.getAllExamResults().first()
+            val comms = commDao.getAllLogs().first()
+            val currentConfig = configDao.getConfigSync() ?: InstituteConfig()
 
-            val studentCount = (payload["students"] as? List<*>)?.size ?: 0
-            Result.success("Cloud Synced! ($studentCount students saved to Firebase)")
+            val operations = mutableListOf<Pair<DocumentReference, Map<String, Any?>>>()
+
+            // 1. `students/{studentId}`
+            students.forEach { s ->
+                operations.add(
+                    firestore.collection(COLLECTION_STUDENTS).document(s.id) to studentToFirestoreMap(s)
+                )
+            }
+
+            // 2. `attendance/{date}`
+            attendanceList.groupBy { it.date }.forEach { (dateStr, records) ->
+                val dayItems = records.map { r ->
+                    mapOf(
+                        "studentId" to r.studentId,
+                        "batchId" to r.batchId,
+                        "status" to r.status,
+                        "reason" to r.reason
+                    )
+                }
+                operations.add(
+                    firestore.collection(COLLECTION_ATTENDANCE).document(dateStr) to mapOf(
+                        "date" to dateStr,
+                        "records" to dayItems,
+                        "updatedAt" to getIsoNow()
+                    )
+                )
+            }
+
+            // 3. `payments/{paymentId}`
+            payments.forEach { p ->
+                operations.add(
+                    firestore.collection(COLLECTION_PAYMENTS).document(p.id) to paymentToFirestoreMap(p)
+                )
+            }
+
+            // 4. Supporting collections (`batches`, `staff`, `expenses`, `exams`, `examResults`, `communications`, `settings`)
+            batches.forEach { b ->
+                operations.add(
+                    firestore.collection(COLLECTION_BATCHES).document(b.id) to batchToFirestoreMap(b)
+                )
+            }
+            staffList.forEach { st ->
+                operations.add(
+                    firestore.collection(COLLECTION_STAFF).document(st.id) to staffToFirestoreMap(st)
+                )
+            }
+            expenses.forEach { e ->
+                operations.add(
+                    firestore.collection(COLLECTION_EXPENSES).document(e.id) to expenseToFirestoreMap(e)
+                )
+            }
+            exams.forEach { ex ->
+                operations.add(
+                    firestore.collection(COLLECTION_EXAMS).document(ex.id) to examToFirestoreMap(ex)
+                )
+            }
+            examResults.forEach { r ->
+                operations.add(
+                    firestore.collection(COLLECTION_EXAM_RESULTS).document(r.id) to examResultToFirestoreMap(r)
+                )
+            }
+            comms.forEach { c ->
+                operations.add(
+                    firestore.collection(COLLECTION_COMMUNICATIONS).document(c.id) to commToFirestoreMap(c)
+                )
+            }
+
+            val settingsMap = mapOf(
+                "darkMode" to currentConfig.darkMode,
+                "instituteName" to currentConfig.instituteName,
+                "address" to currentConfig.address,
+                "contactPhone" to currentConfig.contactPhone,
+                "defaultClassesPerCycle" to currentConfig.defaultClassesPerCycle,
+                "updatedAt" to getIsoNow()
+            )
+            operations.add(
+                firestore.collection(COLLECTION_SETTINGS).document(DOC_INSTITUTE_CONFIG) to settingsMap
+            )
+
+            // Commit in chunks of 400 so lakhs of records sync safely
+            operations.chunked(BATCH_CHUNK_SIZE).forEach { chunk ->
+                val writeBatch = firestore.batch()
+                chunk.forEach { (docRef, dataMap) ->
+                    writeBatch.set(docRef, dataMap)
+                }
+                writeBatch.commit().await()
+            }
+
+            _isCloudConnected.value = true
+            Result.success("Cloud Synced! (${students.size} students, ${payments.size} payments synced to Collections)")
         } catch (e: Exception) {
+            _isCloudConnected.value = false
             Result.failure(e)
         } finally {
             isApplyingRemoteUpdate = false
@@ -442,8 +1060,7 @@ class CoachMasterRepository(
     }
 
     /**
-     * Full two-way sync button handler: pulls latest if local is empty, otherwise pushes local state,
-     * or pulls if explicitly requested.
+     * Full two-way sync button handler.
      */
     suspend fun syncWithCloud(pullFirst: Boolean = false): Result<String> = withContext(Dispatchers.IO) {
         if (pullFirst) {
@@ -458,6 +1075,181 @@ class CoachMasterRepository(
         }
     }
 
+    private fun parseStudentMap(fallbackId: String, m: Map<String, Any?>): Student? {
+        val id = m["id"]?.toString()?.ifBlank { fallbackId } ?: fallbackId
+        val name = m["name"]?.toString() ?: return null
+        val roll = (m["roll"] ?: m["rollNo"])?.toString() ?: ""
+        val batchId = m["batchId"]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+        val fee = (m["monthlyFee"] as? Number)?.toDouble() ?: m["monthlyFee"]?.toString()?.toDoubleOrNull() ?: 0.0
+        return Student(
+            id = id,
+            rollNo = roll,
+            name = name,
+            phone = m["phone"]?.toString() ?: "",
+            parentPhone = m["parentPhone"]?.toString() ?: "",
+            batchId = batchId,
+            monthlyFee = fee,
+            joiningDate = m["joiningDate"]?.toString() ?: FeeCalculator.getTodayStr(),
+            status = m["status"]?.toString() ?: "active",
+            notes = m["notes"]?.toString() ?: ""
+        )
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun parseAttendanceDateDoc(
+        dateDocId: String,
+        data: Map<String, Any?>,
+        studentBatchMap: Map<String, String?>
+    ): List<AttendanceRecord> {
+        val dateStr = data["date"]?.toString()?.ifBlank { dateDocId } ?: dateDocId
+        val items = (data["records"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
+        return items.mapNotNull { item ->
+            val stuId = item["studentId"]?.toString() ?: return@mapNotNull null
+            val status = item["status"]?.toString() ?: "present"
+            val reason = item["reason"]?.toString() ?: ""
+            val batchId = item["batchId"]?.toString()?.takeIf { it.isNotBlank() && it != "null" } ?: studentBatchMap[stuId]
+            AttendanceRecord(
+                id = "${dateStr}_${stuId}",
+                date = dateStr,
+                studentId = stuId,
+                batchId = batchId,
+                status = status,
+                reason = reason
+            )
+        }
+    }
+
+    private fun parsePaymentMap(fallbackId: String, m: Map<String, Any?>): PaymentRecord? {
+        val txId = (m["transactionId"] ?: m["id"])?.toString()?.ifBlank { fallbackId } ?: fallbackId
+        val stuId = m["studentId"]?.toString() ?: return null
+        val amt = (m["amountPaid"] ?: m["amount"])?.let {
+            (it as? Number)?.toDouble() ?: it.toString().toDoubleOrNull()
+        } ?: 0.0
+        val disc = m["discount"]?.let {
+            (it as? Number)?.toDouble() ?: it.toString().toDoubleOrNull()
+        } ?: 0.0
+        val payDate = m["paymentDate"]?.toString() ?: FeeCalculator.getTodayStr()
+        val mode = (m["mode"] ?: m["paymentMode"])?.toString() ?: "Cash"
+        val remarks = m["remarks"]?.toString() ?: ""
+        val isoTs = m["timestamp"]?.toString() ?: ""
+        val tsMillis = (m["timestampMillis"] as? Number)?.toLong() ?: parseIsoToMillis(isoTs)
+        return PaymentRecord(
+            id = txId,
+            studentId = stuId,
+            amount = amt,
+            discount = disc,
+            paymentDate = payDate,
+            paymentMode = mode,
+            remarks = remarks,
+            timestamp = tsMillis,
+            isoTimestamp = isoTs
+        )
+    }
+
+    private fun parseStaffMap(fallbackId: String, m: Map<String, Any?>): Staff? {
+        val id = m["id"]?.toString()?.ifBlank { fallbackId } ?: fallbackId
+        val name = m["name"]?.toString() ?: return null
+        return Staff(
+            id = id,
+            name = name,
+            role = m["role"]?.toString() ?: "Teacher",
+            subject = m["subject"]?.toString() ?: "",
+            phone = m["phone"]?.toString() ?: "",
+            salary = (m["salary"] as? Number)?.toDouble() ?: m["salary"]?.toString()?.toDoubleOrNull() ?: 0.0
+        )
+    }
+
+    private fun parseBatchMap(fallbackId: String, m: Map<String, Any?>, staffById: Map<String, Staff>): Batch? {
+        val id = m["id"]?.toString()?.ifBlank { fallbackId } ?: fallbackId
+        val name = m["name"]?.toString() ?: return null
+        val teacherId = m["teacherId"]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
+        val teacherName = teacherId?.let { staffById[it]?.name } ?: (m["teacherName"]?.toString() ?: "")
+        val classesPerCycle = (m["classesPerCycle"] as? Number)?.toInt() ?: m["classesPerCycle"]?.toString()?.toIntOrNull() ?: 0
+        return Batch(
+            id = id,
+            name = name,
+            subject = m["subject"]?.toString() ?: "",
+            schedule = m["schedule"]?.toString() ?: "",
+            timing = m["timing"]?.toString() ?: "",
+            teacherId = teacherId,
+            teacherName = teacherName,
+            classesPerCycle = classesPerCycle
+        )
+    }
+
+    private fun parseExpenseMap(fallbackId: String, m: Map<String, Any?>): ExpenseRecord {
+        val id = m["id"]?.toString()?.ifBlank { fallbackId } ?: fallbackId
+        val date = m["date"]?.toString() ?: FeeCalculator.getTodayStr()
+        val category = m["category"]?.toString() ?: "Other"
+        val description = m["description"]?.toString() ?: ""
+        val amount = (m["amount"] as? Number)?.toDouble() ?: m["amount"]?.toString()?.toDoubleOrNull() ?: 0.0
+        return ExpenseRecord(
+            id = id,
+            date = date,
+            category = category,
+            description = description,
+            amount = amount
+        )
+    }
+
+    private fun parseExamMap(fallbackId: String, m: Map<String, Any?>): Exam? {
+        val id = m["id"]?.toString()?.ifBlank { fallbackId } ?: fallbackId
+        val name = m["name"]?.toString() ?: return null
+        val batchId = m["batchId"]?.toString() ?: ""
+        val date = m["date"]?.toString() ?: FeeCalculator.getTodayStr()
+        val totalMarks = (m["totalMarks"] as? Number)?.toInt() ?: m["totalMarks"]?.toString()?.toIntOrNull() ?: 100
+        return Exam(
+            id = id,
+            name = name,
+            batchId = batchId,
+            date = date,
+            totalMarks = totalMarks
+        )
+    }
+
+    private fun parseExamResultMap(m: Map<String, Any?>): ExamResult? {
+        val examId = m["examId"]?.toString() ?: return null
+        val studentId = m["studentId"]?.toString() ?: return null
+        val marks = (m["marksObtained"] as? Number)?.toDouble() ?: m["marksObtained"]?.toString()?.toDoubleOrNull() ?: 0.0
+        return ExamResult(
+            id = "${examId}_${studentId}",
+            examId = examId,
+            studentId = studentId,
+            marksObtained = marks
+        )
+    }
+
+    private fun parseCommMap(fallbackId: String, m: Map<String, Any?>): CommunicationLog? {
+        val id = m["id"]?.toString()?.ifBlank { fallbackId } ?: fallbackId
+        val stuId = m["studentId"]?.toString() ?: return null
+        val note = m["note"]?.toString() ?: ""
+        val date = m["date"]?.toString() ?: FeeCalculator.getTodayStr()
+        val isoTs = m["timestamp"]?.toString() ?: ""
+        return CommunicationLog(
+            id = id,
+            studentId = stuId,
+            date = date,
+            note = note,
+            timestamp = parseIsoToMillis(isoTs),
+            isoTimestamp = isoTs
+        )
+    }
+
+    private fun parseSettingsMap(rawSettings: Map<String, Any?>, existingConfig: InstituteConfig): InstituteConfig {
+        val parsedCycle = (rawSettings["defaultClassesPerCycle"] as? Number)?.toInt()
+            ?: rawSettings["defaultClassesPerCycle"]?.toString()?.toIntOrNull()
+            ?: existingConfig.defaultClassesPerCycle
+        return existingConfig.copy(
+            instituteName = rawSettings["instituteName"]?.toString()?.ifBlank { "CoachMaster" } ?: existingConfig.instituteName,
+            address = rawSettings["address"]?.toString() ?: existingConfig.address,
+            contactPhone = rawSettings["contactPhone"]?.toString() ?: existingConfig.contactPhone,
+            darkMode = (rawSettings["darkMode"] as? Boolean) ?: existingConfig.darkMode,
+            defaultClassesPerCycle = if (parsedCycle > 0) parsedCycle else 30,
+            adminPin = SecurityUtils.hashSecret(existingConfig.adminPin),
+            adminPassword = SecurityUtils.hashSecret(existingConfig.adminPassword)
+        )
+    }
+
     private suspend fun buildCloudPayloadMap(): Map<String, Any?> {
         val students = studentDao.getAllStudents().first()
         val batches = batchDao.getAllBatches().first()
@@ -470,21 +1262,8 @@ class CoachMasterRepository(
         val comms = commDao.getAllLogs().first()
         val currentConfig = configDao.getConfigSync() ?: InstituteConfig()
 
-        val studentsMapped = students.map { s ->
-            mapOf(
-                "id" to s.id,
-                "roll" to s.rollNo,
-                "name" to s.name,
-                "phone" to s.phone,
-                "parentPhone" to s.parentPhone,
-                "batchId" to s.batchId,
-                "monthlyFee" to s.monthlyFee,
-                "joiningDate" to s.joiningDate,
-                "status" to s.status
-            )
-        }
+        val studentsMapped = students.map { s -> studentToFirestoreMap(s) }
 
-        // Attendance in v10studendrecord.html is { "YYYY-MM-DD": [ { studentId, status, reason } ] }
         val attendanceByDate = mutableMapOf<String, List<Map<String, String>>>()
         attendanceList.groupBy { it.date }.forEach { (dateStr, records) ->
             attendanceByDate[dateStr] = records.map { r ->
@@ -496,79 +1275,13 @@ class CoachMasterRepository(
             }
         }
 
-        val paymentsMapped = payments.map { p ->
-            mapOf(
-                "transactionId" to p.id,
-                "studentId" to p.studentId,
-                "amountPaid" to p.amount,
-                "discount" to p.discount,
-                "paymentDate" to p.paymentDate,
-                "mode" to p.paymentMode,
-                "remarks" to p.remarks,
-                "timestamp" to p.isoTimestamp.ifBlank { getIsoNow() }
-            )
-        }
-
-        val batchesMapped = batches.map { b ->
-            mapOf(
-                "id" to b.id,
-                "name" to b.name,
-                "subject" to b.subject,
-                "schedule" to b.schedule,
-                "timing" to b.timing,
-                "teacherId" to b.teacherId,
-                "classesPerCycle" to b.classesPerCycle
-            )
-        }
-
-        val commsMapped = comms.map { c ->
-            mapOf(
-                "id" to c.id,
-                "studentId" to c.studentId,
-                "date" to c.date,
-                "note" to c.note,
-                "timestamp" to c.isoTimestamp.ifBlank { getIsoNow() }
-            )
-        }
-
-        val examsMapped = exams.map { ex ->
-            mapOf(
-                "id" to ex.id,
-                "name" to ex.name,
-                "batchId" to ex.batchId,
-                "date" to ex.date,
-                "totalMarks" to ex.totalMarks
-            )
-        }
-
-        val examResultsMapped = examResults.map { r ->
-            mapOf(
-                "examId" to r.examId,
-                "studentId" to r.studentId,
-                "marksObtained" to r.marksObtained
-            )
-        }
-
-        val expensesMapped = expenses.map { e ->
-            mapOf(
-                "id" to e.id,
-                "date" to e.date,
-                "category" to e.category,
-                "description" to e.description,
-                "amount" to e.amount
-            )
-        }
-
-        val staffMapped = staffList.map { st ->
-            mapOf(
-                "id" to st.id,
-                "name" to st.name,
-                "role" to st.role,
-                "subject" to st.subject,
-                "phone" to st.phone,
-                "salary" to st.salary
-            )
-        }
+        val paymentsMapped = payments.map { p -> paymentToFirestoreMap(p) }
+        val batchesMapped = batches.map { b -> batchToFirestoreMap(b) }
+        val commsMapped = comms.map { c -> commToFirestoreMap(c) }
+        val examsMapped = exams.map { ex -> examToFirestoreMap(ex) }
+        val examResultsMapped = examResults.map { r -> examResultToFirestoreMap(r) }
+        val expensesMapped = expenses.map { e -> expenseToFirestoreMap(e) }
+        val staffMapped = staffList.map { st -> staffToFirestoreMap(st) }
 
         val settingsMap = mapOf(
             "darkMode" to currentConfig.darkMode,
@@ -596,65 +1309,26 @@ class CoachMasterRepository(
     private suspend fun applyCloudMapToLocalDb(data: Map<String, Any?>) {
         isApplyingRemoteUpdate = true
         try {
-            // Parse Staff first so Batch teacher names can be linked
             val rawStaff = (data["staff"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
             val parsedStaff = rawStaff.mapNotNull { m ->
                 val id = m["id"]?.toString() ?: return@mapNotNull null
-                val name = m["name"]?.toString() ?: return@mapNotNull null
-                Staff(
-                    id = id,
-                    name = name,
-                    role = m["role"]?.toString() ?: "Teacher",
-                    subject = m["subject"]?.toString() ?: "",
-                    phone = m["phone"]?.toString() ?: "",
-                    salary = (m["salary"] as? Number)?.toDouble() ?: m["salary"]?.toString()?.toDoubleOrNull() ?: 0.0
-                )
+                parseStaffMap(id, m)
             }
             val staffById = parsedStaff.associateBy { it.id }
 
-            // Parse Batches
             val rawBatches = (data["batches"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
             val parsedBatches = rawBatches.mapNotNull { m ->
                 val id = m["id"]?.toString() ?: return@mapNotNull null
-                val name = m["name"]?.toString() ?: return@mapNotNull null
-                val teacherId = m["teacherId"]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
-                val teacherName = teacherId?.let { staffById[it]?.name } ?: (m["teacherName"]?.toString() ?: "")
-                val classesPerCycle = (m["classesPerCycle"] as? Number)?.toInt() ?: m["classesPerCycle"]?.toString()?.toIntOrNull() ?: 0
-                Batch(
-                    id = id,
-                    name = name,
-                    subject = m["subject"]?.toString() ?: "",
-                    schedule = m["schedule"]?.toString() ?: "",
-                    timing = m["timing"]?.toString() ?: "",
-                    teacherId = teacherId,
-                    teacherName = teacherName,
-                    classesPerCycle = classesPerCycle
-                )
+                parseBatchMap(id, m, staffById)
             }
 
-            // Parse Students
             val rawStudents = (data["students"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
             val parsedStudents = rawStudents.mapNotNull { m ->
                 val id = m["id"]?.toString() ?: return@mapNotNull null
-                val name = m["name"]?.toString() ?: return@mapNotNull null
-                val roll = (m["roll"] ?: m["rollNo"])?.toString() ?: ""
-                val batchId = m["batchId"]?.toString()?.takeIf { it.isNotBlank() && it != "null" }
-                val fee = (m["monthlyFee"] as? Number)?.toDouble() ?: m["monthlyFee"]?.toString()?.toDoubleOrNull() ?: 0.0
-                Student(
-                    id = id,
-                    rollNo = roll,
-                    name = name,
-                    phone = m["phone"]?.toString() ?: "",
-                    parentPhone = m["parentPhone"]?.toString() ?: "",
-                    batchId = batchId,
-                    monthlyFee = fee,
-                    joiningDate = m["joiningDate"]?.toString() ?: FeeCalculator.getTodayStr(),
-                    status = m["status"]?.toString() ?: "active"
-                )
+                parseStudentMap(id, m)
             }
             val studentBatchMap = parsedStudents.associate { it.id to it.batchId }
 
-            // Parse Attendance (Map of date -> List of {studentId, status, reason})
             val parsedAttendance = mutableListOf<AttendanceRecord>()
             val rawAtt = data["attendance"]
             if (rawAtt is Map<*, *>) {
@@ -679,114 +1353,37 @@ class CoachMasterRepository(
                 }
             }
 
-            // Parse Payments
             val rawPayments = (data["payments"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
             val parsedPayments = rawPayments.mapNotNull { m ->
-                val txId = (m["transactionId"] ?: m["id"])?.toString() ?: UUID.randomUUID().toString()
-                val stuId = m["studentId"]?.toString() ?: return@mapNotNull null
-                val amt = (m["amountPaid"] ?: m["amount"])?.let {
-                    (it as? Number)?.toDouble() ?: it.toString().toDoubleOrNull()
-                } ?: 0.0
-                val disc = m["discount"]?.let {
-                    (it as? Number)?.toDouble() ?: it.toString().toDoubleOrNull()
-                } ?: 0.0
-                val payDate = m["paymentDate"]?.toString() ?: FeeCalculator.getTodayStr()
-                val mode = (m["mode"] ?: m["paymentMode"])?.toString() ?: "Cash"
-                val remarks = m["remarks"]?.toString() ?: ""
-                val isoTs = m["timestamp"]?.toString() ?: ""
-                PaymentRecord(
-                    id = txId,
-                    studentId = stuId,
-                    amount = amt,
-                    discount = disc,
-                    paymentDate = payDate,
-                    paymentMode = mode,
-                    remarks = remarks,
-                    timestamp = parseIsoToMillis(isoTs),
-                    isoTimestamp = isoTs
-                )
+                val id = (m["transactionId"] ?: m["id"])?.toString() ?: UUID.randomUUID().toString()
+                parsePaymentMap(id, m)
             }
 
-            // Parse Communications
             val rawComms = (data["communications"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
             val parsedComms = rawComms.mapNotNull { m ->
                 val id = m["id"]?.toString() ?: UUID.randomUUID().toString()
-                val stuId = m["studentId"]?.toString() ?: return@mapNotNull null
-                val note = m["note"]?.toString() ?: ""
-                val date = m["date"]?.toString() ?: FeeCalculator.getTodayStr()
-                val isoTs = m["timestamp"]?.toString() ?: ""
-                CommunicationLog(
-                    id = id,
-                    studentId = stuId,
-                    date = date,
-                    note = note,
-                    timestamp = parseIsoToMillis(isoTs),
-                    isoTimestamp = isoTs
-                )
+                parseCommMap(id, m)
             }
 
-            // Parse Exams
             val rawExams = (data["exams"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
             val parsedExams = rawExams.mapNotNull { m ->
                 val id = m["id"]?.toString() ?: return@mapNotNull null
-                val name = m["name"]?.toString() ?: return@mapNotNull null
-                val batchId = m["batchId"]?.toString() ?: ""
-                val date = m["date"]?.toString() ?: FeeCalculator.getTodayStr()
-                val totalMarks = (m["totalMarks"] as? Number)?.toInt() ?: m["totalMarks"]?.toString()?.toIntOrNull() ?: 100
-                Exam(
-                    id = id,
-                    name = name,
-                    batchId = batchId,
-                    date = date,
-                    totalMarks = totalMarks
-                )
+                parseExamMap(id, m)
             }
 
-            // Parse Exam Results
             val rawResults = (data["examResults"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
-            val parsedResults = rawResults.mapNotNull { m ->
-                val examId = m["examId"]?.toString() ?: return@mapNotNull null
-                val studentId = m["studentId"]?.toString() ?: return@mapNotNull null
-                val marks = (m["marksObtained"] as? Number)?.toDouble() ?: m["marksObtained"]?.toString()?.toDoubleOrNull() ?: 0.0
-                ExamResult(
-                    id = "${examId}_${studentId}",
-                    examId = examId,
-                    studentId = studentId,
-                    marksObtained = marks
-                )
-            }
+            val parsedResults = rawResults.mapNotNull { m -> parseExamResultMap(m) }
 
-            // Parse Expenses
             val rawExpenses = (data["expenses"] as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
             val parsedExpenses = rawExpenses.mapNotNull { m ->
                 val id = m["id"]?.toString() ?: UUID.randomUUID().toString()
-                val date = m["date"]?.toString() ?: FeeCalculator.getTodayStr()
-                val category = m["category"]?.toString() ?: "Other"
-                val description = m["description"]?.toString() ?: ""
-                val amount = (m["amount"] as? Number)?.toDouble() ?: m["amount"]?.toString()?.toDoubleOrNull() ?: 0.0
-                ExpenseRecord(
-                    id = id,
-                    date = date,
-                    category = category,
-                    description = description,
-                    amount = amount
-                )
+                parseExpenseMap(id, m)
             }
 
-            // Parse Settings
             val rawSettings = data["settings"] as? Map<String, Any?>
             val existingConfig = configDao.getConfigSync() ?: InstituteConfig()
             val updatedConfig = if (rawSettings != null) {
-                val parsedCycle = (rawSettings["defaultClassesPerCycle"] as? Number)?.toInt()
-                    ?: rawSettings["defaultClassesPerCycle"]?.toString()?.toIntOrNull()
-                    ?: existingConfig.defaultClassesPerCycle
-                existingConfig.copy(
-                    instituteName = rawSettings["instituteName"]?.toString()?.ifBlank { "CoachMaster" } ?: existingConfig.instituteName,
-                    address = rawSettings["address"]?.toString() ?: existingConfig.address,
-                    contactPhone = rawSettings["contactPhone"]?.toString() ?: existingConfig.contactPhone,
-                    darkMode = (rawSettings["darkMode"] as? Boolean) ?: existingConfig.darkMode,
-                    defaultClassesPerCycle = if (parsedCycle > 0) parsedCycle else 30
-                )
+                parseSettingsMap(rawSettings, existingConfig)
             } else existingConfig
 
             database.withTransaction {
@@ -816,18 +1413,11 @@ class CoachMasterRepository(
         }
     }
 
-    /**
-     * Exports the entire database as a formatted JSON string identical to v10studendrecord.html's
-     * "Download Backup JSON" feature.
-     */
     suspend fun exportBackupJson(): String = withContext(Dispatchers.IO) {
         val payload = buildCloudPayloadMap()
         JSONObject(payload).toString(2)
     }
 
-    /**
-     * Restores the database from a v10studendrecord.html backup JSON string and syncs to Firebase.
-     */
     suspend fun importBackupJson(jsonStr: String): Result<String> = withContext(Dispatchers.IO) {
         try {
             val root = JSONObject(jsonStr)
@@ -837,7 +1427,7 @@ class CoachMasterRepository(
             val map = jsonObjectToMap(root)
             applyCloudMapToLocalDb(map)
             pushToCloud()
-            Result.success("Database restored and synced to Firebase Cloud!")
+            Result.success("Database restored and synced to Firestore Collections!")
         } catch (e: Exception) {
             Result.failure(e)
         }

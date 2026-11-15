@@ -4,15 +4,12 @@ import android.app.Application
 import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.data.database.AppDatabase
 import com.example.data.model.*
 import com.example.data.repository.CoachMasterRepository
 import com.example.ui.components.MonthlyAttendanceData
 import com.example.ui.components.MonthlyFinanceData
 import com.example.util.FeeCalculator
-import com.example.util.PdfReceiptGenerator
 import com.example.util.ShareHelper
-import com.example.util.StudentDueInfo
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -36,26 +33,26 @@ data class UiState(
     val currentTab: AppNavDestination = AppNavDestination.DASHBOARD,
     val isUnlocked: Boolean = false,
     val isAdmin: Boolean = false,
-    val searchQuery: String = "",
-    val selectedBatchFilter: String? = null,
     val selectedDate: String = FeeCalculator.getTodayStr(),
     val isSyncing: Boolean = false,
     val isCloudConnected: Boolean = true,
     val statusMessage: String? = null,
-    val selectedStudentForDossier: Student? = null,
-    val selectedStudentForAttendanceHistory: Student? = null,
-    val selectedStudentForCommLog: Student? = null,
-    val selectedStudentForShareOptions: Student? = null,
     val selectedStudentForPayment: Student? = null,
     val showGlobalSearchModal: Boolean = false
 )
 
+/**
+ * App-shell coordinator ViewModel handling navigation, lock/unlock session state,
+ * staff/exam management, and system settings.
+ * Core domain operations are modularized into:
+ * - [DashboardViewModel]
+ * - [StudentViewModel]
+ * - [AttendanceViewModel]
+ * - [FinanceViewModel]
+ */
 class CoachMasterViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val repository = CoachMasterRepository(
-        database = AppDatabase.getInstance(application),
-        appContext = application.applicationContext
-    )
+    private val repository = CoachMasterRepository.getInstance(application)
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -87,37 +84,34 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
     val examResults: StateFlow<List<ExamResult>> = repository.allExamResults
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val communications: StateFlow<List<CommunicationLog>> = repository.allCommunications
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
-
     val config: StateFlow<InstituteConfig> = repository.config
         .map { it ?: InstituteConfig() }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), InstituteConfig())
 
     init {
-        // Connect to Firebase Firestore (tuitionAppDb/mainData) on boot and listen in real time
+        repository.ensureInitialized()
+
         viewModelScope.launch {
-            _uiState.update { it.copy(isSyncing = true) }
-            val result = repository.pullFromCloud()
-            _uiState.update {
-                it.copy(
-                    isSyncing = false,
-                    isCloudConnected = result.isSuccess
-                )
+            repository.isSyncing.collect { syncing ->
+                _uiState.update { it.copy(isSyncing = syncing) }
             }
-            repository.startRealtimeCloudSync { connected, msg ->
-                _uiState.update { state ->
-                    state.copy(
-                        isCloudConnected = connected,
-                        statusMessage = msg ?: state.statusMessage
-                    )
+        }
+        viewModelScope.launch {
+            repository.isCloudConnected.collect { connected ->
+                _uiState.update { it.copy(isCloudConnected = connected) }
+            }
+        }
+        viewModelScope.launch {
+            repository.statusMessage.collect { msg ->
+                if (msg != null) {
+                    _uiState.update { it.copy(statusMessage = msg) }
                 }
             }
         }
     }
 
     fun unlockAsAdmin() {
-        _uiState.update { it.copy(isUnlocked = true, isAdmin = true, statusMessage = "Welcome back, Pankaj jii!") }
+        _uiState.update { it.copy(isUnlocked = true, isAdmin = true, statusMessage = "Welcome back, Admin!") }
     }
 
     fun loginAsGuest() {
@@ -140,19 +134,8 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
         _uiState.update { it.copy(selectedDate = date, currentTab = AppNavDestination.ATTENDANCE) }
     }
 
-    fun setSearchQuery(query: String) {
-        _uiState.update { it.copy(searchQuery = query) }
-    }
-
-    fun setSelectedBatchFilter(batchId: String?) {
-        _uiState.update { it.copy(selectedBatchFilter = batchId) }
-    }
-
-    fun setSelectedDate(date: String) {
-        _uiState.update { it.copy(selectedDate = date) }
-    }
-
     fun clearStatusMessage() {
+        repository.clearStatusMessage()
         _uiState.update { it.copy(statusMessage = null) }
     }
 
@@ -164,95 +147,22 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
         _uiState.update { it.copy(showGlobalSearchModal = false) }
     }
 
-    fun openStudentDossier(student: Student) {
-        _uiState.update { it.copy(selectedStudentForDossier = student) }
-    }
-
-    fun closeStudentDossier() {
-        _uiState.update { it.copy(selectedStudentForDossier = null) }
-    }
-
-    fun openAttendanceHistoryModal(student: Student) {
-        _uiState.update { it.copy(selectedStudentForAttendanceHistory = student) }
-    }
-
-    fun closeAttendanceHistoryModal() {
-        _uiState.update { it.copy(selectedStudentForAttendanceHistory = null) }
-    }
-
-    fun openCommLogModal(student: Student) {
-        _uiState.update { it.copy(selectedStudentForCommLog = student) }
-    }
-
-    fun closeCommLogModal() {
-        _uiState.update { it.copy(selectedStudentForCommLog = null) }
-    }
-
-    fun openShareOptionsModal(student: Student) {
-        _uiState.update { it.copy(selectedStudentForShareOptions = student) }
-    }
-
-    fun closeShareOptionsModal() {
-        _uiState.update { it.copy(selectedStudentForShareOptions = null) }
-    }
-
     fun selectStudentForPayment(student: Student?) {
         _uiState.update { it.copy(selectedStudentForPayment = student, currentTab = AppNavDestination.FINANCE) }
-    }
-
-    fun calculateDuesForStudent(student: Student): StudentDueInfo {
-        val batch = batches.value.find { it.id == student.batchId }
-        val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, config.value)
-        return FeeCalculator.calculateStudentDues(
-            student = student,
-            payments = payments.value,
-            attendanceRecords = attendance.value,
-            classesPerCycle = cycleLen
-        )
-    }
-
-    // Student CRUD
-    fun saveStudent(student: Student) {
-        viewModelScope.launch {
-            repository.saveStudent(student)
-            _uiState.update { it.copy(statusMessage = "Student profile saved & synced: ${student.name}") }
-        }
-    }
-
-    fun deleteStudent(studentId: String) {
-        viewModelScope.launch {
-            repository.deleteStudent(studentId)
-            _uiState.update {
-                it.copy(
-                    statusMessage = "Student record permanently deleted",
-                    selectedStudentForDossier = null,
-                    selectedStudentForAttendanceHistory = null,
-                    selectedStudentForCommLog = null,
-                    selectedStudentForShareOptions = null
-                )
-            }
-        }
-    }
-
-    fun toggleStudentStatus(student: Student) {
-        viewModelScope.launch {
-            repository.toggleStudentStatus(student)
-            _uiState.update { it.copy(statusMessage = "Status updated") }
-        }
     }
 
     // Batch CRUD
     fun saveBatch(batch: Batch) {
         viewModelScope.launch {
             repository.saveBatch(batch)
-            _uiState.update { it.copy(statusMessage = "Batch saved: ${batch.name}") }
+            repository.postStatusMessage("Batch saved: ${batch.name}")
         }
     }
 
     fun deleteBatch(batch: Batch) {
         viewModelScope.launch {
             repository.deleteBatch(batch)
-            _uiState.update { it.copy(statusMessage = "Batch deleted") }
+            repository.postStatusMessage("Batch deleted")
         }
     }
 
@@ -260,170 +170,23 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
     fun saveStaff(staffMember: Staff) {
         viewModelScope.launch {
             repository.saveStaff(staffMember)
-            _uiState.update { it.copy(statusMessage = "Staff member saved: ${staffMember.name}") }
+            repository.postStatusMessage("Staff member saved: ${staffMember.name}")
         }
     }
 
     fun deleteStaff(staffMember: Staff) {
         viewModelScope.launch {
             repository.deleteStaff(staffMember)
-            _uiState.update { it.copy(statusMessage = "Staff member removed") }
-        }
-    }
-
-    // Attendance & Holiday Actions
-    fun markAttendance(
-        date: String,
-        attendanceMap: Map<String, String>,
-        batchId: String?,
-        reasonMap: Map<String, String> = emptyMap()
-    ) {
-        viewModelScope.launch {
-            val studentLookup = students.value.associateBy { it.id }
-            val records = attendanceMap.map { (studentId, status) ->
-                AttendanceRecord(
-                    id = "${date}_${studentId}",
-                    date = date,
-                    studentId = studentId,
-                    batchId = batchId ?: studentLookup[studentId]?.batchId,
-                    status = status,
-                    reason = reasonMap[studentId] ?: ""
-                )
-            }
-            repository.recordAttendanceBatch(date, records)
-            _uiState.update { it.copy(statusMessage = "Attendance saved for ${FeeCalculator.formatDate(date)}") }
-        }
-    }
-
-    fun markTuitionHolidayRange(
-        startDate: String,
-        endDate: String,
-        reason: String,
-        batchId: String? = null
-    ) {
-        viewModelScope.launch {
-            val targetStudents = if (batchId == null) {
-                activeStudents.value
-            } else {
-                activeStudents.value.filter { it.batchId == batchId }
-            }
-            val dates = FeeCalculator.generateDateRange(startDate, endDate)
-            val cleanReason = reason.trim().ifBlank { "Tuition Holiday" }
-            val allHolidayRecords = mutableListOf<AttendanceRecord>()
-
-            dates.forEach { d ->
-                targetStudents.forEach { stu ->
-                    allHolidayRecords.add(
-                        AttendanceRecord(
-                            id = "${d}_${stu.id}",
-                            date = d,
-                            studentId = stu.id,
-                            batchId = stu.batchId,
-                            status = "holiday",
-                            reason = cleanReason
-                        )
-                    )
-                }
-            }
-            if (allHolidayRecords.isNotEmpty()) {
-                repository.recordAttendanceBatch(startDate, allHolidayRecords)
-            }
-            val label = if (dates.size == 1) {
-                FeeCalculator.formatDate(startDate)
-            } else {
-                "${FeeCalculator.formatDate(startDate)} - ${FeeCalculator.formatDate(endDate)} (${dates.size} days)"
-            }
-            _uiState.update {
-                it.copy(statusMessage = "🏖️ Marked Tuition Holiday for $label (Fee Frozen)")
-            }
-        }
-    }
-
-    fun markPaidWeeklyOff(date: String, reason: String = "Paid Sunday / Weekly Off") {
-        viewModelScope.launch {
-            val records = activeStudents.value.map { stu ->
-                AttendanceRecord(
-                    id = "${date}_${stu.id}",
-                    date = date,
-                    studentId = stu.id,
-                    batchId = stu.batchId,
-                    status = "present",
-                    reason = reason
-                )
-            }
-            if (records.isNotEmpty()) {
-                repository.recordAttendanceBatch(date, records)
-            }
-            _uiState.update {
-                it.copy(statusMessage = "✅ Marked ${FeeCalculator.formatDate(date)} as Paid Day (+1 Working Day)")
-            }
-        }
-    }
-
-    /**
-     * Finds recent past dates (up to the last 7 days ending yesterday) where active students
-     * were enrolled on or before that date, and NO attendance or holiday record was marked.
-     */
-    fun getUnmarkedPastDates(
-        allAttendance: List<AttendanceRecord> = attendance.value,
-        activeStudentList: List<Student> = activeStudents.value
-    ): List<String> {
-        if (activeStudentList.isEmpty()) return emptyList()
-        val earliestJoining = activeStudentList.minOfOrNull { it.joiningDate.substringBefore("T") } ?: return emptyList()
-        val markedDates = allAttendance.map { it.date }.toSet()
-
-        val unmarked = mutableListOf<String>()
-        val fmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
-        val cal = Calendar.getInstance()
-
-        for (daysBack in 1..7) {
-            val checkCal = cal.clone() as Calendar
-            checkCal.add(Calendar.DAY_OF_YEAR, -daysBack)
-            val dateStr = fmt.format(checkCal.time)
-            if (dateStr >= earliestJoining && !markedDates.contains(dateStr)) {
-                unmarked.add(dateStr)
-            }
-        }
-        return unmarked
-    }
-
-    // Payments
-    fun recordPayment(
-        studentId: String,
-        amount: Double,
-        date: String,
-        mode: String,
-        remarks: String,
-        discount: Double = 0.0
-    ) {
-        viewModelScope.launch {
-            val payment = PaymentRecord(
-                studentId = studentId,
-                amount = amount,
-                discount = discount,
-                paymentDate = date,
-                paymentMode = mode,
-                remarks = remarks
-            )
-            repository.recordPayment(payment)
-            val msg = if (discount > 0.0) {
-                "Recorded ${FeeCalculator.formatCurrency(amount)} Paid + ${FeeCalculator.formatCurrency(discount)} Discount!"
-            } else {
-                "Payment of ${FeeCalculator.formatCurrency(amount)} recorded successfully"
-            }
-            _uiState.update { it.copy(statusMessage = msg) }
-        }
-    }
-
-    fun deletePayment(payment: PaymentRecord) {
-        viewModelScope.launch {
-            repository.deletePayment(payment)
-            _uiState.update { it.copy(statusMessage = "Transaction removed") }
+            repository.postStatusMessage("Staff member removed")
         }
     }
 
     // Expenses
     fun recordExpense(date: String, category: String, description: String, amount: Double) {
+        if (amount <= 0.0) {
+            repository.postStatusMessage("Expense amount must be greater than 0")
+            return
+        }
         viewModelScope.launch {
             val expense = ExpenseRecord(
                 date = date,
@@ -432,14 +195,14 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
                 amount = amount
             )
             repository.recordExpense(expense)
-            _uiState.update { it.copy(statusMessage = "Expense logged") }
+            repository.postStatusMessage("Expense logged")
         }
     }
 
     fun deleteExpense(expense: ExpenseRecord) {
         viewModelScope.launch {
             repository.deleteExpense(expense)
-            _uiState.update { it.copy(statusMessage = "Expense deleted") }
+            repository.postStatusMessage("Expense deleted")
         }
     }
 
@@ -447,14 +210,14 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
     fun saveExam(exam: Exam) {
         viewModelScope.launch {
             repository.saveExam(exam)
-            _uiState.update { it.copy(statusMessage = "Exam scheduled") }
+            repository.postStatusMessage("Exam scheduled")
         }
     }
 
     fun deleteExam(exam: Exam) {
         viewModelScope.launch {
             repository.deleteExam(exam)
-            _uiState.update { it.copy(statusMessage = "Exam deleted") }
+            repository.postStatusMessage("Exam deleted")
         }
     }
 
@@ -469,27 +232,7 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
                 )
             }
             repository.saveExamResults(examId, results)
-            _uiState.update { it.copy(statusMessage = "Marks saved successfully") }
-        }
-    }
-
-    // Communication Log
-    fun addCommunicationLog(studentId: String, note: String, date: String = FeeCalculator.getTodayStr()) {
-        viewModelScope.launch {
-            val log = CommunicationLog(
-                studentId = studentId,
-                date = date,
-                note = note
-            )
-            repository.addCommunicationLog(log)
-            _uiState.update { it.copy(statusMessage = "Note added to log") }
-        }
-    }
-
-    fun deleteCommunicationLog(log: CommunicationLog) {
-        viewModelScope.launch {
-            repository.deleteCommunicationLog(log)
-            _uiState.update { it.copy(statusMessage = "Note deleted") }
+            repository.postStatusMessage("Marks saved successfully")
         }
     }
 
@@ -497,7 +240,7 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
     fun updateConfig(newConfig: InstituteConfig) {
         viewModelScope.launch {
             repository.saveConfig(newConfig)
-            _uiState.update { it.copy(statusMessage = "Institute Profile Saved") }
+            repository.postStatusMessage("Institute Profile & Security Saved")
         }
     }
 
@@ -511,108 +254,44 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
     fun factoryReset() {
         viewModelScope.launch {
             repository.factoryReset()
-            _uiState.update { it.copy(statusMessage = "Factory reset complete.") }
+            repository.postStatusMessage("Factory reset complete.")
         }
     }
 
     fun seedDemoData() {
         viewModelScope.launch {
             repository.seedDemoData()
-            _uiState.update { it.copy(statusMessage = "Demo data loaded", currentTab = AppNavDestination.DASHBOARD) }
+            _uiState.update { it.copy(currentTab = AppNavDestination.DASHBOARD) }
+            repository.postStatusMessage("Demo data loaded")
         }
     }
 
-    // Backup Export & Import
     fun exportBackupJson(context: Context) {
         viewModelScope.launch {
             val json = repository.exportBackupJson()
             ShareHelper.shareBackupJsonFile(context, json)
-            _uiState.update { it.copy(statusMessage = "Backup JSON generated") }
+            repository.postStatusMessage("Backup JSON generated")
         }
     }
 
     fun importBackupJson(jsonStr: String) {
         viewModelScope.launch {
             val res = repository.importBackupJson(jsonStr)
-            _uiState.update {
-                it.copy(
-                    statusMessage = if (res.isSuccess) res.getOrNull() else "Invalid backup file: ${res.exceptionOrNull()?.localizedMessage}"
-                )
-            }
+            repository.postStatusMessage(
+                if (res.isSuccess) res.getOrNull() else "Invalid backup file: ${res.exceptionOrNull()?.localizedMessage}"
+            )
         }
     }
 
-    // PDF Receipt & Full History Report
-    fun generateAndShareReceipt(context: Context, student: Student, preferWhatsApp: Boolean = false) {
-        viewModelScope.launch {
-            val studentPayments = payments.value.filter { it.studentId == student.id }
-            val batch = batches.value.find { it.id == student.batchId }
-            val currentConfig = config.value
-            val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, currentConfig)
-            val dueInfo = FeeCalculator.calculateStudentDues(
-                student = student,
-                payments = studentPayments,
-                attendanceRecords = attendance.value,
-                classesPerCycle = cycleLen
-            )
-
-            val pdfFile = PdfReceiptGenerator.generateReceiptPdf(
-                context = context,
-                student = student,
-                batch = batch,
-                config = currentConfig,
-                dueInfo = dueInfo,
-                recentPayments = studentPayments
-            )
-
-            ShareHelper.sharePdfReceipt(context, pdfFile, student, dueInfo.pendingBalance, preferWhatsApp)
-        }
-    }
-
-    fun generateAndShareFullHistory(context: Context, student: Student) {
-        viewModelScope.launch {
-            val studentPayments = payments.value.filter { it.studentId == student.id }
-            val studentAtt = attendance.value.filter { it.studentId == student.id }
-            val batch = batches.value.find { it.id == student.batchId }
-            val currentConfig = config.value
-            val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, currentConfig)
-            val dueInfo = FeeCalculator.calculateStudentDues(
-                student = student,
-                payments = studentPayments,
-                attendanceRecords = attendance.value,
-                classesPerCycle = cycleLen
-            )
-
-            val pdfFile = PdfReceiptGenerator.generateFullHistoryPdf(
-                context = context,
-                student = student,
-                batch = batch,
-                config = currentConfig,
-                dueInfo = dueInfo,
-                payments = studentPayments,
-                attendance = studentAtt
-            )
-
-            ShareHelper.sharePdfReceipt(context, pdfFile, student, dueInfo.pendingBalance, preferWhatsApp = false)
-        }
-    }
-
-    // Cloud Sync
     fun triggerCloudSync(pullFirst: Boolean = false) {
         viewModelScope.launch {
-            _uiState.update { it.copy(isSyncing = true) }
             val result = repository.syncWithCloud(pullFirst = pullFirst)
-            _uiState.update {
-                it.copy(
-                    isSyncing = false,
-                    isCloudConnected = result.isSuccess,
-                    statusMessage = if (result.isSuccess) result.getOrNull() else "Offline mode active (Local changes saved safely)"
-                )
-            }
+            repository.postStatusMessage(
+                if (result.isSuccess) result.getOrNull() else "Offline mode active (Local changes saved safely)"
+            )
         }
     }
 
-    // Analytical Helpers (Exact match with v10studendrecord.html reportsModule)
     fun getMonthlyFinanceData(): List<MonthlyFinanceData> {
         val result = mutableListOf<MonthlyFinanceData>()
         val cal = Calendar.getInstance()

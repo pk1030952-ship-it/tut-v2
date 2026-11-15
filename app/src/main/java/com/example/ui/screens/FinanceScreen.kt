@@ -16,32 +16,36 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.PaymentRecord
-import com.example.ui.CoachMasterViewModel
+import com.example.ui.FinanceViewModel
 import com.example.ui.theme.*
 import com.example.util.FeeCalculator
+import com.example.util.SecurityUtils
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FinanceScreen(
-    viewModel: CoachMasterViewModel,
+    financeViewModel: FinanceViewModel = viewModel(),
+    isAdmin: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val uiState by viewModel.uiState.collectAsState()
-    val students by viewModel.students.collectAsState()
-    val batches by viewModel.batches.collectAsState()
-    val allPayments by viewModel.payments.collectAsState()
-    val allAttendance by viewModel.attendance.collectAsState()
-    val config by viewModel.config.collectAsState()
+    val selectedStudentForPayment by financeViewModel.selectedStudentForPayment.collectAsState()
+    val selectedStudentForShareOptions by financeViewModel.selectedStudentForShareOptions.collectAsState()
+    val students by financeViewModel.students.collectAsState()
+    val batches by financeViewModel.batches.collectAsState()
+    val allPayments by financeViewModel.payments.collectAsState()
+    val allAttendance by financeViewModel.attendance.collectAsState()
+    val config by financeViewModel.config.collectAsState()
 
     var selectedStudent by remember(students) {
-        mutableStateOf(uiState.selectedStudentForPayment ?: students.firstOrNull())
+        mutableStateOf(selectedStudentForPayment ?: students.firstOrNull())
     }
 
-    LaunchedEffect(uiState.selectedStudentForPayment, students) {
-        if (uiState.selectedStudentForPayment != null) {
-            selectedStudent = students.find { it.id == uiState.selectedStudentForPayment!!.id } ?: uiState.selectedStudentForPayment
+    LaunchedEffect(selectedStudentForPayment, students) {
+        if (selectedStudentForPayment != null) {
+            selectedStudent = students.find { it.id == selectedStudentForPayment!!.id } ?: selectedStudentForPayment
         } else if (selectedStudent == null && students.isNotEmpty()) {
             selectedStudent = students.first()
         }
@@ -54,6 +58,7 @@ fun FinanceScreen(
     var payDate by remember { mutableStateOf(FeeCalculator.getTodayStr()) }
     var payMode by remember { mutableStateOf("Cash") }
     var payRemarks by remember { mutableStateOf("") }
+    var formError by remember { mutableStateOf<String?>(null) }
     var paymentToDelete by remember { mutableStateOf<PaymentRecord?>(null) }
 
     val studentPayments = remember(allPayments, selectedStudent) {
@@ -90,7 +95,6 @@ fun FinanceScreen(
             )
         }
 
-        // Student Selection Dropdown
         item {
             Card(
                 shape = RoundedCornerShape(14.dp),
@@ -148,14 +152,12 @@ fun FinanceScreen(
         }
 
         if (selectedStudent != null && dueInfo != null) {
-            // Financial Status Cards + Working Days Proof
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        // Total Accrued Fees
                         Card(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp),
@@ -172,7 +174,6 @@ fun FinanceScreen(
                             }
                         }
 
-                        // Total Paid History
                         Card(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp),
@@ -185,7 +186,6 @@ fun FinanceScreen(
                             }
                         }
 
-                        // Total Discount / Concession Given
                         Card(
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp),
@@ -204,7 +204,6 @@ fun FinanceScreen(
                         }
                     }
 
-                    // Working Days & Holiday Proof Summary Strip
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
@@ -227,7 +226,6 @@ fun FinanceScreen(
                         }
                     }
 
-                    // Pending Balance Card with DUE / CLEARED Badge
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
@@ -275,8 +273,7 @@ fun FinanceScreen(
                 }
             }
 
-            // Record Payment & Instant Discount Form (Admin only)
-            if (uiState.isAdmin) {
+            if (isAdmin) {
                 item {
                     val enteredPaid = payAmount.toDoubleOrNull() ?: 0.0
                     val enteredDiscount = payDiscount.toDoubleOrNull() ?: 0.0
@@ -306,6 +303,7 @@ fun FinanceScreen(
                                         onClick = {
                                             payAmount = dueInfo.pendingBalance.toInt().toString()
                                             payDiscount = ""
+                                            formError = null
                                         },
                                         label = {
                                             Text(
@@ -320,20 +318,26 @@ fun FinanceScreen(
 
                             Spacer(modifier = Modifier.height(10.dp))
 
-                            // Paid Amount + Instant Discount Side-by-Side
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 OutlinedTextField(
                                     value = payAmount,
-                                    onValueChange = { payAmount = it },
+                                    onValueChange = {
+                                        payAmount = it
+                                        formError = null
+                                    },
                                     label = { Text("Paid Amount (₹) *") },
                                     placeholder = { Text("e.g. 100") },
                                     singleLine = true,
+                                    isError = formError != null,
                                     modifier = Modifier.weight(1f).testTag("pay_amount_input")
                                 )
 
                                 OutlinedTextField(
                                     value = payDiscount,
-                                    onValueChange = { payDiscount = it },
+                                    onValueChange = {
+                                        payDiscount = it
+                                        formError = null
+                                    },
                                     label = { Text("Discount (₹)") },
                                     placeholder = { Text("e.g. 50") },
                                     singleLine = true,
@@ -341,7 +345,17 @@ fun FinanceScreen(
                                 )
                             }
 
-                            // 1-Tap Quick Waive Helper when Paid Amount < Pending Balance
+                            if (formError != null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = formError!!,
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.testTag("finance_form_error")
+                                )
+                            }
+
                             if (dueInfo.pendingBalance > 0 && enteredPaid > 0 && remainingToWaive > 0 && enteredDiscount != remainingToWaive) {
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Surface(
@@ -383,7 +397,6 @@ fun FinanceScreen(
                                 }
                             }
 
-                            // Live Account Settlement Preview Banner
                             if (totalSettledNow > 0.0) {
                                 Spacer(modifier = Modifier.height(8.dp))
                                 Card(
@@ -462,21 +475,28 @@ fun FinanceScreen(
 
                             Button(
                                 onClick = {
-                                    val amt = payAmount.toDoubleOrNull() ?: 0.0
-                                    val disc = payDiscount.toDoubleOrNull() ?: 0.0
-                                    if (amt > 0.0 || disc > 0.0) {
-                                        viewModel.recordPayment(
-                                            studentId = selectedStudent!!.id,
-                                            amount = amt,
-                                            date = payDate.trim(),
-                                            mode = payMode,
-                                            remarks = payRemarks.trim(),
-                                            discount = disc
-                                        )
-                                        payAmount = ""
-                                        payDiscount = ""
-                                        payRemarks = ""
+                                    val amt = payAmount.trim().toDoubleOrNull() ?: 0.0
+                                    val disc = payDiscount.trim().toDoubleOrNull() ?: 0.0
+                                    if (!SecurityUtils.isValidPositiveAmount(payAmount) && disc <= 0.0) {
+                                        formError = "Paid Amount must be a positive number greater than 0."
+                                        return@Button
                                     }
+                                    if (amt < 0.0 || disc < 0.0) {
+                                        formError = "Amount and discount cannot be negative."
+                                        return@Button
+                                    }
+                                    formError = null
+                                    financeViewModel.recordPayment(
+                                        studentId = selectedStudent!!.id,
+                                        amount = amt,
+                                        date = payDate.trim(),
+                                        mode = payMode,
+                                        remarks = payRemarks.trim(),
+                                        discount = disc
+                                    )
+                                    payAmount = ""
+                                    payDiscount = ""
+                                    payRemarks = ""
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
                                 shape = RoundedCornerShape(10.dp),
@@ -489,7 +509,6 @@ fun FinanceScreen(
                 }
             }
 
-            // Transaction History Header + Print/Share Options Button (matches v10studendrecord.html)
             item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -503,7 +522,7 @@ fun FinanceScreen(
                     )
 
                     Button(
-                        onClick = { viewModel.openShareOptionsModal(selectedStudent!!) },
+                        onClick = { financeViewModel.openShareOptionsModal(selectedStudent!!) },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = IndigoLight,
                             contentColor = IndigoPrimary
@@ -563,7 +582,7 @@ fun FinanceScreen(
                                         )
                                     }
                                 }
-                                if (uiState.isAdmin) {
+                                if (isAdmin) {
                                     IconButton(
                                         onClick = { paymentToDelete = p },
                                         modifier = Modifier.size(32.dp)
@@ -587,7 +606,7 @@ fun FinanceScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        paymentToDelete?.let { viewModel.deletePayment(it) }
+                        paymentToDelete?.let { financeViewModel.deletePayment(it) }
                         paymentToDelete = null
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = CoralWarning)
@@ -601,22 +620,22 @@ fun FinanceScreen(
         )
     }
 
-    if (uiState.selectedStudentForShareOptions != null) {
-        val s = uiState.selectedStudentForShareOptions!!
+    if (selectedStudentForShareOptions != null) {
+        val s = selectedStudentForShareOptions!!
         ShareOptionsModal(
             student = s,
-            onDismiss = { viewModel.closeShareOptionsModal() },
+            onDismiss = { financeViewModel.closeShareOptionsModal() },
             onPrintFullHistory = {
-                viewModel.closeShareOptionsModal()
-                viewModel.generateAndShareFullHistory(context, s)
+                financeViewModel.closeShareOptionsModal()
+                financeViewModel.generateAndShareFullHistory(context, s)
             },
             onPrintOfficialReceipt = {
-                viewModel.closeShareOptionsModal()
-                viewModel.generateAndShareReceipt(context, s, preferWhatsApp = false)
+                financeViewModel.closeShareOptionsModal()
+                financeViewModel.generateAndShareReceipt(context, s, preferWhatsApp = false)
             },
             onSendWhatsAppReceipt = {
-                viewModel.closeShareOptionsModal()
-                viewModel.generateAndShareReceipt(context, s, preferWhatsApp = true)
+                financeViewModel.closeShareOptionsModal()
+                financeViewModel.generateAndShareReceipt(context, s, preferWhatsApp = true)
             }
         )
     }

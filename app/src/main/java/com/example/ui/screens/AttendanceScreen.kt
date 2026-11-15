@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -18,10 +17,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.model.AttendanceRecord
-import com.example.data.model.Batch
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.data.model.Student
-import com.example.ui.CoachMasterViewModel
+import com.example.ui.AttendanceViewModel
 import com.example.ui.components.DeclareHolidayDialog
 import com.example.ui.theme.*
 import com.example.util.FeeCalculator
@@ -32,21 +30,21 @@ import java.util.*
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AttendanceScreen(
-    viewModel: CoachMasterViewModel,
+    attendanceViewModel: AttendanceViewModel = viewModel(),
+    isAdmin: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val uiState by viewModel.uiState.collectAsState()
-    val activeStudents by viewModel.activeStudents.collectAsState()
-    val batches by viewModel.batches.collectAsState()
-    val attendanceRecords by viewModel.attendance.collectAsState()
-    val config by viewModel.config.collectAsState()
+    val vmSelectedDate by attendanceViewModel.selectedDate.collectAsState()
+    val activeStudents by attendanceViewModel.activeStudents.collectAsState()
+    val batches by attendanceViewModel.batches.collectAsState()
+    val attendanceRecords by attendanceViewModel.attendance.collectAsState()
+    val config by attendanceViewModel.config.collectAsState()
 
-    var selectedDate by remember(uiState.selectedDate) { mutableStateOf(uiState.selectedDate) }
+    var selectedDate by remember(vmSelectedDate) { mutableStateOf(vmSelectedDate) }
     var selectedBatchId by remember { mutableStateOf<String?>(null) }
     var showHolidayDialog by remember { mutableStateOf(false) }
 
-    // Filter students by batch
     val filteredStudents = remember(activeStudents, selectedBatchId) {
         if (selectedBatchId == null) activeStudents
         else activeStudents.filter { it.batchId == selectedBatchId }
@@ -64,7 +62,6 @@ fun AttendanceScreen(
         existingDayRecords.firstOrNull { it.status == "holiday" }?.reason?.ifBlank { "Tuition Holiday" } ?: ""
     }
 
-    // Local mutable state for current date roll call: Map<StudentId, Status> & Map<StudentId, Reason>
     val currentDayAttendance = remember(attendanceRecords, selectedDate, activeStudents) {
         val map = mutableStateMapOf<String, String>()
         activeStudents.forEach { student ->
@@ -91,7 +88,7 @@ fun AttendanceScreen(
     Scaffold(
         modifier = modifier.fillMaxSize(),
         bottomBar = {
-            if (uiState.isAdmin && !isSelectedDateHoliday) {
+            if (isAdmin && !isSelectedDateHoliday) {
                 Surface(
                     tonalElevation = 6.dp,
                     shadowElevation = 8.dp,
@@ -131,7 +128,7 @@ fun AttendanceScreen(
                                 val subsetReasons = filteredStudents.associate { s ->
                                     s.id to (currentDayReason[s.id] ?: "")
                                 }
-                                viewModel.markAttendance(
+                                attendanceViewModel.markAttendance(
                                     date = selectedDate,
                                     attendanceMap = subsetAttendance,
                                     batchId = selectedBatchId,
@@ -157,7 +154,6 @@ fun AttendanceScreen(
                 .padding(paddingValues)
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
-            // Date Switcher Row
             Card(
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -180,9 +176,9 @@ fun AttendanceScreen(
                                     cal.add(Calendar.DAY_OF_YEAR, -1)
                                     val newDate = fmt.format(cal.time)
                                     selectedDate = newDate
-                                    viewModel.setSelectedDate(newDate)
+                                    attendanceViewModel.setSelectedDate(newDate)
                                 }
-                            } catch (e: Exception) {}
+                            } catch (_: Exception) {}
                         }
                     ) {
                         Icon(Icons.Default.ChevronLeft, contentDescription = "Previous Day")
@@ -215,9 +211,9 @@ fun AttendanceScreen(
                                     cal.add(Calendar.DAY_OF_YEAR, 1)
                                     val newDate = fmt.format(cal.time)
                                     selectedDate = newDate
-                                    viewModel.setSelectedDate(newDate)
+                                    attendanceViewModel.setSelectedDate(newDate)
                                 }
-                            } catch (e: Exception) {}
+                            } catch (_: Exception) {}
                         }
                     ) {
                         Icon(Icons.Default.ChevronRight, contentDescription = "Next Day")
@@ -227,8 +223,7 @@ fun AttendanceScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Declare Holiday Toggle Card ("Tuition Closed Today (Holiday)")
-            if (uiState.isAdmin) {
+            if (isAdmin) {
                 Card(
                     shape = RoundedCornerShape(12.dp),
                     colors = CardDefaults.cardColors(
@@ -267,9 +262,8 @@ fun AttendanceScreen(
                                 if (checked) {
                                     showHolidayDialog = true
                                 } else {
-                                    // Re-open tuition as Normal Class (Present by default)
                                     val defaultPresent = filteredStudents.associate { it.id to "present" }
-                                    viewModel.markAttendance(
+                                    attendanceViewModel.markAttendance(
                                         date = selectedDate,
                                         attendanceMap = defaultPresent,
                                         batchId = selectedBatchId
@@ -282,8 +276,7 @@ fun AttendanceScreen(
                 }
             }
 
-            // Sunday Quick Choice Banner on Attendance Screen if unmarked Sunday
-            if (FeeCalculator.isSunday(selectedDate) && !isAlreadySaved && uiState.isAdmin) {
+            if (FeeCalculator.isSunday(selectedDate) && !isAlreadySaved && isAdmin) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Card(
                     colors = CardDefaults.cardColors(containerColor = IndigoLight),
@@ -306,7 +299,7 @@ fun AttendanceScreen(
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             Button(
-                                onClick = { viewModel.markPaidWeeklyOff(selectedDate, "Paid Sunday") },
+                                onClick = { attendanceViewModel.markPaidWeeklyOff(selectedDate, "Paid Sunday") },
                                 colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary),
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                                 modifier = Modifier.height(30.dp)
@@ -327,7 +320,6 @@ fun AttendanceScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Batch selection chips
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxWidth()
@@ -351,7 +343,6 @@ fun AttendanceScreen(
             Spacer(modifier = Modifier.height(6.dp))
 
             if (isSelectedDateHoliday) {
-                // Holiday Active State (Hides Present/Absent buttons as requested)
                 Card(
                     shape = RoundedCornerShape(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -394,7 +385,7 @@ fun AttendanceScreen(
                             color = Color.Gray
                         )
                         Spacer(modifier = Modifier.height(16.dp))
-                        if (uiState.isAdmin) {
+                        if (isAdmin) {
                             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                                 Button(
                                     onClick = {
@@ -415,7 +406,7 @@ fun AttendanceScreen(
                                 OutlinedButton(
                                     onClick = {
                                         val defaultPresent = filteredStudents.associate { it.id to "present" }
-                                        viewModel.markAttendance(
+                                        attendanceViewModel.markAttendance(
                                             date = selectedDate,
                                             attendanceMap = defaultPresent,
                                             batchId = selectedBatchId
@@ -429,8 +420,7 @@ fun AttendanceScreen(
                     }
                 }
             } else {
-                // Quick Mark All Actions
-                if (uiState.isAdmin) {
+                if (isAdmin) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -465,7 +455,6 @@ fun AttendanceScreen(
                     }
                 }
 
-                // Student Roster
                 if (filteredStudents.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -491,7 +480,7 @@ fun AttendanceScreen(
                                 batchName = batch?.name ?: "No Batch",
                                 status = currentStatus,
                                 leaveReason = currentReason,
-                                isAdmin = uiState.isAdmin,
+                                isAdmin = isAdmin,
                                 onStatusChange = { newStatus ->
                                     currentDayAttendance[student.id] = newStatus
                                     if (newStatus == "leave" && currentDayReason[student.id].isNullOrBlank()) {
@@ -512,7 +501,7 @@ fun AttendanceScreen(
             instituteName = config.instituteName,
             onDismiss = { showHolidayDialog = false },
             onSaveHoliday = { start, end, reason, broadcastWhatsApp ->
-                viewModel.markTuitionHolidayRange(start, end, reason, selectedBatchId)
+                attendanceViewModel.markTuitionHolidayRange(start, end, reason, selectedBatchId)
                 showHolidayDialog = false
                 if (broadcastWhatsApp) {
                     val dateDisplay = if (start == end) {
@@ -578,7 +567,6 @@ fun AttendanceRosterItem(
                 }
             }
 
-            // Segmented Present (+1) / Absent (+1) / Leave (0 - Fee Pause) Buttons
             Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 val isPresent = status == "present"
                 val isAbsent = status == "absent"

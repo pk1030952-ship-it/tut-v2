@@ -98,14 +98,14 @@ fun MetricKpiCard(
 
 /**
  * Auth screen supporting BOTH:
- * 1) "Pankaj jii Login" password modal (`P@88337`) & "View Status (Guest)" from v10studendrecord.html
- * 2) Fast 4-digit PIN pad (`8833`) / Biometric unlock
+ * 1) Admin Password login verified against hashed credentials in Room DB
+ * 2) Fast 4-digit PIN pad / Biometric unlock
  */
 @Composable
 fun PinLockScreen(
     instituteName: String = "CoachMaster",
     correctPin: String,
-    correctPassword: String = "P@88337",
+    correctPassword: String,
     isBiometricAvailable: Boolean,
     onUnlockSuccess: () -> Unit,
     onGuestLogin: () -> Unit
@@ -122,10 +122,10 @@ fun PinLockScreen(
             enteredPin = newPin
             errorMessage = null
             if (newPin.length == 4) {
-                if (newPin == correctPin) {
+                if (com.example.util.SecurityUtils.verifySecret(newPin, correctPin)) {
                     onUnlockSuccess()
                 } else {
-                    errorMessage = "Incorrect PIN. Try again or use Pankaj jii Login."
+                    errorMessage = "Incorrect PIN. Try again or use Admin Password Login."
                     enteredPin = ""
                 }
             }
@@ -182,7 +182,7 @@ fun PinLockScreen(
 
             Spacer(modifier = Modifier.height(20.dp))
 
-            // Primary Auth Buttons matching v10studendrecord.html
+            // Primary Auth Buttons
             Button(
                 onClick = {
                     passwordInput = ""
@@ -340,7 +340,7 @@ fun PinLockScreen(
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "Enter Pankaj jii Admin Password:",
+                        text = "Enter Admin Password:",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
@@ -368,7 +368,9 @@ fun PinLockScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (passwordInput == correctPassword || passwordInput == "P@88337" || passwordInput == correctPin) {
+                        val isValidPassword = com.example.util.SecurityUtils.verifySecret(passwordInput, correctPassword)
+                        val isValidPin = com.example.util.SecurityUtils.verifySecret(passwordInput, correctPin)
+                        if (isValidPassword || isValidPin) {
                             showPasswordDialog = false
                             onUnlockSuccess()
                         } else {
