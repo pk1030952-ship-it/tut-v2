@@ -110,6 +110,7 @@ fun PinLockScreen(
     onUnlockSuccess: () -> Unit,
     onGuestLogin: () -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var enteredPin by remember { mutableStateOf("") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var showPasswordDialog by remember { mutableStateOf(false) }
@@ -291,7 +292,15 @@ fun PinLockScreen(
                             "bio" -> {
                                 if (isBiometricAvailable) {
                                     IconButton(
-                                        onClick = { onUnlockSuccess() },
+                                        onClick = {
+                                            errorMessage = null
+                                            com.example.util.BiometricAuthHelper.authenticate(
+                                                context = context,
+                                                instituteName = instituteName,
+                                                onSuccess = { onUnlockSuccess() },
+                                                onError = { err -> errorMessage = err }
+                                            )
+                                        },
                                         modifier = Modifier
                                             .size(60.dp)
                                             .testTag("pin_biometric")
@@ -334,13 +343,14 @@ fun PinLockScreen(
     }
 
     if (showPasswordDialog) {
+        var showPasswordText by remember { mutableStateOf(false) }
         AlertDialog(
             onDismissRequest = { showPasswordDialog = false },
             title = { Text("Admin Authentication", fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = "Enter Admin Password:",
+                        text = "Enter Admin Password or 4-Digit PIN:",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                     )
@@ -352,7 +362,19 @@ fun PinLockScreen(
                         },
                         label = { Text("Enter Password") },
                         singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
+                        visualTransformation = if (showPasswordText) {
+                            androidx.compose.ui.text.input.VisualTransformation.None
+                        } else {
+                            PasswordVisualTransformation()
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { showPasswordText = !showPasswordText }) {
+                                Icon(
+                                    imageVector = if (showPasswordText) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (showPasswordText) "Hide Password" else "Show Password"
+                                )
+                            }
+                        },
                         modifier = Modifier.fillMaxWidth().testTag("admin_password_input")
                     )
                     if (passwordError != null) {
@@ -517,7 +539,11 @@ fun GlobalSearchModal(
                                 ) {
                                     Column {
                                         Text(s.name, fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                                        Text("Student | ${s.phone}", fontSize = 11.sp, color = Color.Gray)
+                                        Text(
+                                            text = "Student | ${com.example.util.SecurityUtils.maskPhoneNumber(s.phone, isAdmin)}",
+                                            fontSize = 11.sp,
+                                            color = Color.Gray
+                                        )
                                     }
                                     Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color.Gray)
                                 }

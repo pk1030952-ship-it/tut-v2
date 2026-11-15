@@ -62,16 +62,45 @@ fun StudentsScreen(
     var studentToDelete by remember { mutableStateOf<Student?>(null) }
 
     val batchNameMap = remember(batches) { batches.associate { it.id to it.name } }
+    val batchById = remember(batches) { batches.associateBy { it.id } }
 
-    val filteredStudents = remember(students, searchQuery, selectedBatchId, batchNameMap) {
-        students.filter { student ->
-            val bName = student.batchId?.let { batchNameMap[it] } ?: ""
-            val matchesQuery = student.name.contains(searchQuery, ignoreCase = true) ||
-                    student.phone.contains(searchQuery) ||
-                    student.rollNo.contains(searchQuery, ignoreCase = true) ||
-                    bName.contains(searchQuery, ignoreCase = true)
-            val matchesBatch = selectedBatchId == null || student.batchId == selectedBatchId
-            matchesQuery && matchesBatch
+    // derivedStateOf optimizations for 200+ students 60 FPS smooth scrolling
+    val paymentsByStudentId by remember(payments) {
+        derivedStateOf { payments.groupBy { it.studentId } }
+    }
+
+    val attendanceByStudentId by remember(attendance) {
+        derivedStateOf { attendance.groupBy { it.studentId } }
+    }
+
+    val studentDuesMap by remember(students, paymentsByStudentId, attendanceByStudentId, batchById, config) {
+        derivedStateOf {
+            students.associate { student ->
+                val batch = student.batchId?.let { batchById[it] }
+                val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, config)
+                val stuPayments = paymentsByStudentId[student.id] ?: emptyList()
+                val stuAtt = attendanceByStudentId[student.id] ?: emptyList()
+                student.id to FeeCalculator.calculateStudentDues(
+                    student = student,
+                    payments = stuPayments,
+                    attendanceRecords = stuAtt,
+                    classesPerCycle = cycleLen
+                )
+            }
+        }
+    }
+
+    val filteredStudents by remember(students, searchQuery, selectedBatchId, batchNameMap) {
+        derivedStateOf {
+            students.filter { student ->
+                val bName = student.batchId?.let { batchNameMap[it] } ?: ""
+                val matchesQuery = student.name.contains(searchQuery, ignoreCase = true) ||
+                        student.phone.contains(searchQuery) ||
+                        student.rollNo.contains(searchQuery, ignoreCase = true) ||
+                        bName.contains(searchQuery, ignoreCase = true)
+                val matchesBatch = selectedBatchId == null || student.batchId == selectedBatchId
+                matchesQuery && matchesBatch
+            }
         }
     }
 
@@ -181,26 +210,50 @@ fun StudentsScreen(
                     }
                 }
             } else {
+                Text(
+                    text = "💡 Swipe Right 👉 for Direct Fee Collection  •  Swipe Left 👈 for WhatsApp",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = IndigoPrimary,
+                    modifier = Modifier.padding(bottom = 6.dp)
+                )
+
                 LazyColumn(
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(bottom = 80.dp)
                 ) {
                     items(filteredStudents, key = { it.id }) { student ->
-                        val batch = batches.find { it.id == student.batchId }
-                        val cycleLen = FeeCalculator.resolveClassesPerCycle(batch, config)
-                        val dueInfo = FeeCalculator.calculateStudentDues(
-                            student = student,
-                            payments = payments,
-                            attendanceRecords = attendance,
-                            classesPerCycle = cycleLen
-                        )
+                        val batchName = student.batchId?.let { batchNameMap[it] } ?: "None"
+                        val dueInfo = studentDuesMap[student.id] ?: remember(student, config) {
+                            FeeCalculator.calculateStudentDues(
+                                student = student,
+                                payments = emptyList(),
+                                attendanceRecords = emptyList(),
+                                classesPerCycle = config.defaultClassesPerCycle
+                            )
+                        }
 
-                        StudentCardItem(
+                        SwipeableStudentCard(
                             student = student,
-                            batchName = batch?.name ?: "None",
+                            batchName = batchName,
                             dueInfo = dueInfo,
                             isAdmin = isAdmin,
+                            onSwipeRightCollectFee = {
+                                if (isAdmin) {
+                                    onSelectStudentForPayment(student)
+                                } else {
+                                    studentViewModel.openStudentDossier(student)
+                                }
+                            },
+                            onSwipeLeftWhatsApp = {
+                                com.example.util.ShareHelper.openDirectWhatsAppMessage(
+                                    context = context,
+                                    student = student,
+                                    dueInfo = dueInfo,
+                                    instituteName = config.instituteName
+                                )
+                            },
                             onCardClick = { studentViewModel.openStudentDossier(student) },
                             onEditClick = {
                                 editingStudent = student
@@ -314,6 +367,120 @@ fun StudentsScreen(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun SwipeableStudentCard(
+    student: Student,
+    batchName: String,
+    dueInfo: StudentDueInfo,
+    isAdmin: Boolean,
+    onSwipeRightCollectFee: () -> Unit,
+    onSwipeLeftWhatsApp: () -> Unit,
+    onCardClick: () -> Unit,
+    onEditClick: () -> Unit,
+    onAttendanceHistoryClick: () -> Unit,
+    onCommLogClick: () -> Unit,
+    onShareOptionsClick: () -> Unit,
+    onToggleStatus: () -> Unit,
+    onDeleteClick: () -> Unit
+) {
+    val currentCollectFee by rememberUpdatedState(onSwipeRightCollectFee)
+    val currentWhatsApp by rememberUpdatedState(onSwipeLeftWhatsApp)
+
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { targetValue ->
+            when (targetValue) {
+                SwipeToDismissBoxValue.StartToEnd -> {
+                    currentCollectFee()
+                    false // Snap back after triggering Fee Collection
+                }
+                SwipeToDismissBoxValue.EndToStart -> {
+                    currentWhatsApp()
+                    false // Snap back after triggering WhatsApp
+                }
+                SwipeToDismissBoxValue.Settled -> false
+            }
+        }
+    )
+
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = true,
+        enableDismissFromEndToStart = true,
+        backgroundContent = {
+            val direction = dismissState.dismissDirection
+            val bgColor = when (direction) {
+                SwipeToDismissBoxValue.StartToEnd -> EmeraldSuccess
+                SwipeToDismissBoxValue.EndToStart -> Color(0xFF128C7E)
+                SwipeToDismissBoxValue.Settled -> Color.Transparent
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(bgColor)
+                    .padding(horizontal = 20.dp),
+                contentAlignment = when (direction) {
+                    SwipeToDismissBoxValue.StartToEnd -> Alignment.CenterStart
+                    SwipeToDismissBoxValue.EndToStart -> Alignment.CenterEnd
+                    SwipeToDismissBoxValue.Settled -> Alignment.Center
+                }
+            ) {
+                when (direction) {
+                    SwipeToDismissBoxValue.StartToEnd -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.CurrencyRupee,
+                                contentDescription = "Direct Fee Collection",
+                                tint = Color.White
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Collect Fee",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                        }
+                    }
+                    SwipeToDismissBoxValue.EndToStart -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "WhatsApp Parent",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Icon(
+                                imageVector = Icons.Default.Send,
+                                contentDescription = "Direct WhatsApp Message",
+                                tint = Color.White
+                            )
+                        }
+                    }
+                    SwipeToDismissBoxValue.Settled -> {}
+                }
+            }
+        }
+    ) {
+        StudentCardItem(
+            student = student,
+            batchName = batchName,
+            dueInfo = dueInfo,
+            isAdmin = isAdmin,
+            onCardClick = onCardClick,
+            onEditClick = onEditClick,
+            onAttendanceHistoryClick = onAttendanceHistoryClick,
+            onCommLogClick = onCommLogClick,
+            onShareOptionsClick = onShareOptionsClick,
+            onToggleStatus = onToggleStatus,
+            onDeleteClick = onDeleteClick
+        )
+    }
+}
+
 @Composable
 fun StudentCardItem(
     student: Student,
@@ -329,6 +496,9 @@ fun StudentCardItem(
     onDeleteClick: () -> Unit
 ) {
     val pendingDues = dueInfo.pendingBalance
+    val displayPhone = remember(student.phone, isAdmin) {
+        SecurityUtils.maskPhoneNumber(student.phone, isAdmin)
+    }
     val progressFraction = remember(dueInfo.currentCycleProgress, dueInfo.classesPerCycle) {
         if (dueInfo.classesPerCycle > 0) {
             (dueInfo.currentCycleProgress.toFloat() / dueInfo.classesPerCycle.toFloat()).coerceIn(0f, 1f)
@@ -402,7 +572,7 @@ fun StudentCardItem(
 
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
-                        text = "${student.rollNo.ifBlank { student.id.take(8) }} | ${student.phone}",
+                        text = "${student.rollNo.ifBlank { student.id.take(8) }} | $displayPhone",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )

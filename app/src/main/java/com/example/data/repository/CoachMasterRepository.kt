@@ -124,6 +124,18 @@ class CoachMasterRepository(
             if (isInitialized) return
             isInitialized = true
             repoScope.launch {
+                val existingConfig = configDao.getConfigSync() ?: InstituteConfig()
+                val normalizedPin = SecurityUtils.normalizeStoredHash(existingConfig.adminPin, isPin = true)
+                val normalizedPassword = SecurityUtils.normalizeStoredHash(existingConfig.adminPassword, isPin = false)
+                if (existingConfig.adminPin != normalizedPin || existingConfig.adminPassword != normalizedPassword) {
+                    configDao.saveConfig(
+                        existingConfig.copy(
+                            adminPin = normalizedPin,
+                            adminPassword = normalizedPassword
+                        )
+                    )
+                }
+
                 _isSyncing.value = true
                 val result = pullFromCloud()
                 _isSyncing.value = false
@@ -1418,9 +1430,34 @@ class CoachMasterRepository(
         JSONObject(payload).toString(2)
     }
 
+    suspend fun performEncryptedAutoBackup(context: Context): java.io.File = withContext(Dispatchers.IO) {
+        val rawJson = exportBackupJson()
+        val encryptedPayload = SecurityUtils.encryptBackupPayload(rawJson)
+        val backupDir = java.io.File(context.filesDir, "auto_backups").apply { mkdirs() }
+        val backupFile = java.io.File(backupDir, "coachmaster_autobackup_${FeeCalculator.getTodayStr()}.enc.json")
+        backupFile.writeText(encryptedPayload, Charsets.UTF_8)
+
+        // Retain the 7 most recent daily encrypted backups
+        val allBackups = backupDir.listFiles { f -> f.name.endsWith(".enc.json") }
+            ?.sortedByDescending { it.lastModified() }
+            ?: emptyList()
+        if (allBackups.size > 7) {
+            allBackups.drop(7).forEach { it.delete() }
+        }
+        backupFile
+    }
+
+    fun getLatestEncryptedBackupFile(context: Context): java.io.File? {
+        val backupDir = java.io.File(context.filesDir, "auto_backups")
+        if (!backupDir.exists()) return null
+        return backupDir.listFiles { f -> f.name.endsWith(".enc.json") }
+            ?.maxByOrNull { it.lastModified() }
+    }
+
     suspend fun importBackupJson(jsonStr: String): Result<String> = withContext(Dispatchers.IO) {
         try {
-            val root = JSONObject(jsonStr)
+            val decryptedStr = SecurityUtils.decryptBackupPayloadIfNeeded(jsonStr)
+            val root = JSONObject(decryptedStr)
             if (!root.has("students") || !root.has("attendance") || !root.has("payments")) {
                 return@withContext Result.failure(IllegalArgumentException("Invalid backup schema"))
             }

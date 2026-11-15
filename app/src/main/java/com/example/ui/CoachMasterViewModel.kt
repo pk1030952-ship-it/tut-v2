@@ -274,6 +274,75 @@ class CoachMasterViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    fun runEncryptedBackupNow(context: Context) {
+        viewModelScope.launch {
+            val file = repository.performEncryptedAutoBackup(context)
+            ShareHelper.shareEncryptedBackupFile(context, file)
+            repository.postStatusMessage("Encrypted AES-256 backup saved (${file.name})")
+        }
+    }
+
+    fun exportFeeLedgerCsv(context: Context) {
+        viewModelScope.launch {
+            val file = com.example.util.CsvExportGenerator.generateFeeLedgerCsv(
+                context = context,
+                payments = payments.value,
+                students = students.value,
+                batches = batches.value
+            )
+            ShareHelper.shareCsvFile(context, file, "Fee Ledger Report")
+            repository.postStatusMessage("Fee Ledger CSV exported (${payments.value.size} records)")
+        }
+    }
+
+    fun exportAttendanceRegisterCsv(context: Context) {
+        viewModelScope.launch {
+            val file = com.example.util.CsvExportGenerator.generateAttendanceRegisterCsv(
+                context = context,
+                attendance = attendance.value,
+                students = students.value,
+                batches = batches.value
+            )
+            ShareHelper.shareCsvFile(context, file, "Attendance Register")
+            repository.postStatusMessage("Attendance Register CSV exported")
+        }
+    }
+
+    fun exportExpenseReportCsv(context: Context) {
+        viewModelScope.launch {
+            val file = com.example.util.CsvExportGenerator.generateExpenseReportCsv(
+                context = context,
+                expenses = expenses.value
+            )
+            ShareHelper.shareCsvFile(context, file, "Expense Report")
+            repository.postStatusMessage("Expense Report CSV exported")
+        }
+    }
+
+    fun exportStudentMasterSummaryCsv(context: Context) {
+        viewModelScope.launch {
+            val file = com.example.util.CsvExportGenerator.generateStudentMasterSummaryCsv(
+                context = context,
+                students = students.value,
+                batches = batches.value,
+                payments = payments.value,
+                attendance = attendance.value,
+                config = config.value
+            )
+            ShareHelper.shareCsvFile(context, file, "Student Master Summary")
+            repository.postStatusMessage("Student Master Summary CSV exported")
+        }
+    }
+
+    fun triggerTestRollCallNotification(context: Context) {
+        val posted = com.example.worker.RollCallReminderWorker.showRollCallNotification(context)
+        if (posted) {
+            repository.postStatusMessage("Roll-Call reminder notification sent! Check your notification shade.")
+        } else {
+            repository.postStatusMessage("Notification permission not granted yet. Enable Notifications in Settings.")
+        }
+    }
+
     fun importBackupJson(jsonStr: String) {
         viewModelScope.launch {
             val res = repository.importBackupJson(jsonStr)

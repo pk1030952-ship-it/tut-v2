@@ -207,6 +207,20 @@ class FeeCalculatorTest {
         assertTrue(com.example.util.SecurityUtils.verifySecret(rawPin, hashedPin))
         assertEquals(false, com.example.util.SecurityUtils.verifySecret("0000", hashedPin))
         assertEquals(false, com.example.util.SecurityUtils.verifySecret("P@88337", hashedPin))
+
+        // Verify default PIN (8833) and default Password (P@88337) match DEFAULT hashes
+        assertTrue(
+            com.example.util.SecurityUtils.verifySecret(
+                "8833",
+                com.example.util.SecurityUtils.DEFAULT_ADMIN_PIN_HASH
+            )
+        )
+        assertTrue(
+            com.example.util.SecurityUtils.verifySecret(
+                "P@88337",
+                com.example.util.SecurityUtils.DEFAULT_ADMIN_PASSWORD_HASH
+            )
+        )
     }
 
     @Test
@@ -255,6 +269,32 @@ class FeeCalculatorTest {
             monthlyFeeStr = "1500"
         )
         assertEquals(null, valid)
+    }
+
+    @Test
+    fun testGuestModePhoneMasking() {
+        val rawPhone = "9876543210"
+        val maskedGuest = com.example.util.SecurityUtils.maskPhoneNumber(rawPhone, isAdmin = false)
+        val unmaskedAdmin = com.example.util.SecurityUtils.maskPhoneNumber(rawPhone, isAdmin = true)
+
+        assertEquals("98765*****", maskedGuest)
+        assertEquals("9876543210", unmaskedAdmin)
+    }
+
+    @Test
+    fun testEncryptedBackupRoundTrip() {
+        val sampleJson = """{"students":[{"id":"stu1","name":"Aarav"}],"attendance":{},"payments":[]}"""
+        val encrypted = com.example.util.SecurityUtils.encryptBackupPayload(sampleJson)
+        assertTrue(encrypted.startsWith("CM_ENC_V1:"))
+        val decrypted = com.example.util.SecurityUtils.decryptBackupPayloadIfNeeded(encrypted)
+        assertEquals(sampleJson, decrypted)
+    }
+
+    @Test
+    fun testWorkSchedulerDelayComputation() {
+        val delayTo9Am = com.example.worker.WorkScheduler.computeDelayUntilHour(9, 0)
+        assertTrue(delayTo9Am > 0L)
+        assertTrue(delayTo9Am <= 24 * 60 * 60 * 1000L)
     }
 }
 

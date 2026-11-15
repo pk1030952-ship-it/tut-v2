@@ -1,9 +1,14 @@
 package com.example
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -11,10 +16,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ui.*
 import com.example.ui.components.GlobalSearchModal
@@ -23,15 +30,26 @@ import com.example.ui.screens.*
 import com.example.ui.theme.CoachMasterTheme
 import com.example.ui.theme.EmeraldSuccess
 import com.example.ui.theme.IndigoPrimary
+import com.example.worker.WorkScheduler
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        WorkScheduler.scheduleDailyAutomation(applicationContext)
+
+        val openTabExtra = intent?.getStringExtra("open_tab")
 
         setContent {
             val vm: CoachMasterViewModel = viewModel()
             val config by vm.config.collectAsState()
+
+            LaunchedEffect(openTabExtra) {
+                if (openTabExtra == "ATTENDANCE") {
+                    vm.selectTab(AppNavDestination.ATTENDANCE)
+                }
+            }
+
             CoachMasterTheme(darkTheme = config.darkMode) {
                 CoachMasterApp(viewModel = vm)
             }
@@ -48,6 +66,7 @@ fun CoachMasterApp(
     attendanceViewModel: AttendanceViewModel = viewModel(),
     financeViewModel: FinanceViewModel = viewModel()
 ) {
+    val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val config by viewModel.config.collectAsState()
     val students by studentViewModel.students.collectAsState()
@@ -55,6 +74,22 @@ fun CoachMasterApp(
     val snackbarHostState = remember { SnackbarHostState() }
 
     var showMoreMenu by remember { mutableStateOf(false) }
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { _ -> }
+
+    LaunchedEffect(uiState.isUnlocked) {
+        if (uiState.isUnlocked && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val granted = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!granted) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+        }
+    }
 
     LaunchedEffect(uiState.statusMessage) {
         uiState.statusMessage?.let {

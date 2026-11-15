@@ -220,6 +220,19 @@ fun SettingsScreen(
 
                     Spacer(modifier = Modifier.height(8.dp))
 
+                    Button(
+                        onClick = { viewModel.runEncryptedBackupNow(context) },
+                        colors = ButtonDefaults.buttonColors(containerColor = IndigoPrimary, contentColor = Color.White),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("encrypted_backup_now_btn")
+                    ) {
+                        Icon(Icons.Default.EnhancedEncryption, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Run & Share Encrypted Auto-Backup (AES-256)")
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
                     OutlinedButton(
                         onClick = { importLauncher.launch("*/*") },
                         shape = RoundedCornerShape(10.dp),
@@ -227,7 +240,7 @@ fun SettingsScreen(
                     ) {
                         Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(18.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Restore from Backup JSON")
+                        Text("Restore from Backup (Plain or Encrypted JSON)")
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -259,7 +272,48 @@ fun SettingsScreen(
             }
         }
 
-        // 3. Security & Hashed PIN / Password Card
+        // 2B. WorkManager Daily Automation Card (9:00 AM Roll-Call + Nightly Encrypted Backup)
+        item {
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.NotificationsActive, contentDescription = null, tint = IndigoPrimary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "WorkManager Daily Automation",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "• 9:00 AM Daily Roll-Call Reminder: \"Aaj ki tuition class start ho gayi hai! Roll Call lein.\"\n• 11:00 PM Nightly Encrypted JSON Auto-Backup (AES-256-GCM).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedButton(
+                        onClick = { viewModel.triggerTestRollCallNotification(context) },
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("test_roll_call_notification_btn")
+                    ) {
+                        Icon(Icons.Default.Notifications, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Test Morning Roll-Call Notification Now")
+                    }
+                }
+            }
+        }
+
+        // 3. Security & Hashed PIN / Password + Biometric Unlock Card
         item {
             Card(
                 shape = RoundedCornerShape(16.dp),
@@ -272,7 +326,7 @@ fun SettingsScreen(
                         Icon(Icons.Default.Lock, contentDescription = null, tint = IndigoPrimary)
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Admin Security (SHA-256 Hashed)",
+                            text = "Admin Security & Biometric Unlock",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -284,6 +338,30 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Hardware Biometric Unlock", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                            Text(
+                                text = "Use Android Fingerprint / Face Unlock on the Lock Screen",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                        Switch(
+                            checked = config.isBiometricEnabled,
+                            onCheckedChange = { enabled ->
+                                viewModel.updateConfig(config.copy(isBiometricEnabled = enabled))
+                            },
+                            modifier = Modifier.testTag("setting_biometric_switch")
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 

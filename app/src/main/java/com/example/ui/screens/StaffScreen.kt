@@ -134,7 +134,11 @@ fun StaffScreen(
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Icon(Icons.Default.Phone, contentDescription = null, tint = Color.Gray, modifier = Modifier.size(16.dp))
                                     Spacer(modifier = Modifier.width(6.dp))
-                                    Text(staff.phone, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f))
+                                    Text(
+                                        text = com.example.util.SecurityUtils.maskPhoneNumber(staff.phone, uiState.isAdmin),
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                                    )
                                 }
 
                                 if (staff.subject.isNotBlank()) {
